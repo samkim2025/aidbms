@@ -73,17 +73,40 @@ def read_file_content(file):
         st.error(f"Error reading {file.name}: {str(e)}")
         return ""
 
-def process_file(file):
-    """Wrapper function to handle file processing with proper error handling"""
+def process_file(file, parser, db_handler, llm_handler, categorizer):
     try:
-        content, error = read_file_content(file)
-        if error:
-            return None, error
-        if not content:
-            return None, "No content extracted"
-        return content, None
+        with st.spinner(f'Processing {file.name}...'):
+            # Parse content
+            content = parser.parse(file)
+            
+            # Process in chunks if content is too long
+            max_chunk = 4000
+            if len(content) > max_chunk:
+                chunks = [content[i:i+max_chunk] for i in range(0, len(content), max_chunk)]
+                results = []
+                for chunk in chunks:
+                    result = llm_handler.categorize_content(chunk)
+                    results.append(result)
+                # Combine results (implement logic based on your needs)
+                final_result = combine_results(results)
+            else:
+                final_result = llm_handler.categorize_content(content)
+            
+            # Store in database
+            db_handler.store_document(file.name, content, final_result)
+            
+            return final_result
+            
     except Exception as e:
-        return None, str(e)
+        st.error(f"Error processing {file.name}: {str(e)}")
+        return None
+
+def combine_results(results):
+    # Implement logic to combine multiple categorization results
+    # This is a simple example - adjust based on your needs
+    categories = [r.get('category', 'Uncategorized') for r in results if r]
+    # Return most common category or implement more sophisticated logic
+    return {'category': max(set(categories), key=categories.count)}
 
 @timeout_handler(5)
 def categorize_file(content, categories):
