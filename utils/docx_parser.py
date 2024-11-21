@@ -21,6 +21,12 @@ class DocxParser:
             
             return "\n".join(text)
             
+        except IOError as e:
+            print(f"IO Error while reading DOCX file: {str(e)}")
+            return ""
+        except ValueError as e:
+            print(f"Invalid DOCX file format: {str(e)}")
+            return ""
         except Exception as e:
-            print(f"Error parsing DOCX: {str(e)}")
+            print(f"Unexpected error while parsing DOCX: {str(e)}")
             return "" 
