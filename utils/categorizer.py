@@ -4,6 +4,8 @@ class AICategorizer:
     def __init__(self, llm_handler):
         self.llm_handler = llm_handler
         self.category_tree = {}
+        self.categories = set()
+        self.load_categories()
 
     async def generate_categories(self, documents):
         """Generate hierarchical categories based on document content"""
@@ -93,3 +95,30 @@ class AICategorizer:
                 "Word Documents": None
             }
         }
+
+    def load_categories(self):
+        try:
+            with open('categories.txt', 'r') as f:
+                self.categories = set(line.strip() for line in f if line.strip())
+        except FileNotFoundError:
+            self.categories = set()
+
+    def save_categories(self):
+        with open('categories.txt', 'w') as f:
+            for category in sorted(self.categories):
+                f.write(f"{category}\n")
+
+    def get_categories(self):
+        """Return list of current categories"""
+        return sorted(list(self.categories))
+
+    def add_category(self, category):
+        """Add a new category"""
+        self.categories.add(category)
+        self.save_categories()
+
+    def remove_category(self, category):
+        """Remove a category"""
+        if category in self.categories:
+            self.categories.remove(category)
+            self.save_categories()
