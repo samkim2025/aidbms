@@ -5,7 +5,8 @@ python-dotenv
 langchain
 langchain-community
 PyPDF2
-scikit-learn
-numpy
 PyMuPDF
 pdfplumber
+scikit-learn
+numpy
+python-docx
