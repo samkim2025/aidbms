@@ -1,0 +1,11 @@
+streamlit
+chromadb
+google-generativeai
+python-dotenv
+langchain
+langchain-community
+PyPDF2
+scikit-learn
+numpy
+PyMuPDF
+pdfplumber
