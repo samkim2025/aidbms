@@ -1,101 +1,57 @@
-import json
-from dotenv import load_dotenv
 import os
 import google.generativeai as genai
-import time
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from typing import Optional
 import streamlit as st
 
 class LLMHandler:
     def __init__(self):
-        # Try to get API key from different sources
-        api_key = (
-            st.secrets.get("GOOGLE_API_KEY") or  # Streamlit secrets
-            os.getenv("GOOGLE_API_KEY") or       # Environment variable
-            None
-        )
+        # Debug logging
+        st.write("Initializing LLM Handler...")
         
+        # Try to get API key from secrets first
+        try:
+            api_key = st.secrets["GOOGLE_API_KEY"]
+            st.write("✅ Successfully retrieved API key from Streamlit secrets")
+            # Verify the key isn't empty or malformed
+            if not api_key or len(api_key) < 10:  # Basic validation
+                st.write("⚠️ API key from secrets appears to be invalid")
+                api_key = None
+        except Exception as e:
+            st.write(f"❌ Error accessing Streamlit secrets: {str(e)}")
+            api_key = None
+
+        # Fallback to environment variable if needed
         if not api_key:
-            raise ValueError(
-                "GOOGLE_API_KEY not found. Please set it in Streamlit secrets "
-                "or environment variables."
-            )
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if api_key:
+                st.write("✅ Using API key from environment variables")
+            else:
+                st.write("❌ No valid API key found in environment variables")
+
+        # Final validation
+        if not api_key:
+            raise ValueError("No valid GOOGLE_API_KEY found in any location")
             
         # Configure Gemini
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-pro')
-        self.timeout = 30  # seconds
-        self.max_retries = 3
-        self.chunk_size = 2000  # Smaller chunks
-        self.delay_between_calls = 2  # seconds
-    
-    def get_response(self, prompt: str) -> str:
         try:
-            response = self.model.generate_content(prompt)
-            return response.text.strip()
+            # Print first and last 4 chars of key for debugging (safely)
+            key_preview = f"{api_key[:4]}...{api_key[-4:]}"
+            st.write(f"Attempting to configure Gemini with key: {key_preview}")
+            
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel('gemini-pro')
+            
+            # Test the configuration
+            test_response = self.model.generate_content("Test")
+            st.write("✅ Successfully tested Gemini API connection")
+            
         except Exception as e:
-            print(f"LLM Error: {str(e)}")
-            return "Uncategorized"
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((TimeoutError, Exception))
-    )
-    def _safe_generate(self, content: str) -> Optional[dict]:
-        try:
-            response = self.model.generate_content(
-                content,
-                generation_config={"temperature": 0.3, "max_output_tokens": 150}
-            )
-            time.sleep(self.delay_between_calls)  # Add delay between API calls
-            return response
-        except Exception as e:
-            print(f"API call failed: {str(e)}")
+            st.write(f"❌ Error configuring/testing Gemini: {str(e)}")
             raise
 
-    def categorize_content(self, content: str, progress_bar=None) -> dict:
+    def categorize_content(self, content: str) -> dict:
         try:
-            # If content is too long, process in chunks
-            if len(content) > self.chunk_size:
-                chunks = [content[i:i+self.chunk_size] 
-                         for i in range(0, len(content), self.chunk_size)]
-                results = []
-                
-                for i, chunk in enumerate(chunks):
-                    if progress_bar:
-                        progress_bar.progress((i + 1) / len(chunks))
-                    
-                    prompt = f"""Analyze this document chunk and provide key topics:
-                    {chunk}
-                    
-                    Provide only the most relevant category."""
-                    
-                    result = self._safe_generate(prompt)
-                    if result:
-                        results.append(result)
-                
-                # Combine results
-                final_prompt = f"""Based on these topics from document chunks:
-                {[r.text for r in results if r]}
-                
-                What is the single most appropriate category?
-                Respond with only the category name."""
-                
-                final_result = self._safe_generate(final_prompt)
-                return {"category": final_result.text if final_result else "Uncategorized"}
-            
-            else:
-                # Process short content directly
-                prompt = f"""Analyze this document and provide the most appropriate category:
-                {content}
-                
-                Respond with only the category name."""
-                
-                result = self._safe_generate(prompt)
-                return {"category": result.text if result else "Uncategorized"}
-                
+            response = self.model.generate_content(content)
+            return {"category": response.text}
         except Exception as e:
-            print(f"Categorization failed: {str(e)}")
-            return {"category": "Uncategorized", "error": str(e)}
+            st.write(f"❌ Error in categorization: {str(e)}")
+            return {"category": "Error", "error": str(e)}

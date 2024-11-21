@@ -164,7 +164,7 @@ def main():
     st.write("Python environment:", os.environ.keys())
     st.write("Available secret keys:", list(st.secrets.keys()))  # This only shows keys, not values
     
-    st.title("AI-Powered DBMS")
+    st.title("AI-DBMS")
     
     # Initialize all session state variables
     if 'categories' not in st.session_state:
