@@ -160,6 +160,10 @@ def categorize_file(content, categories):
         return "Uncategorized"
 
 def main():
+    # At the start of your main function
+    st.write("Python environment:", os.environ.keys())
+    st.write("Available secret keys:", list(st.secrets.keys()))  # This only shows keys, not values
+    
     st.title("AI-Powered DBMS")
     
     # Initialize all session state variables
