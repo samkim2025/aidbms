@@ -160,76 +160,204 @@ def categorize_file(content, categories):
         return "Uncategorized"
 
 def main():
-    st.title("AI Document Management System")
+    st.title("AI-Powered DBMS")
     
-    # Add instructions
-    st.markdown("""
-    ### Instructions:
-    1. Upload your files.
-    2. Select pre-defined categories
-    3. Verify that your file is parsable by clicking on the "Test Parse Files".
-    4. Classify uploaded files into your pre-defined categories by clicking on the "Classify Documents" button.
-    5. If you add/remove from current categories and want to recategorize your files, make sure you click the "Clear all documents" button at the bottom of the webpage.
-    """)
-    
-    # Initialize handlers
-    parser, db_handler, llm_handler, categorizer = init_handlers()
-    
-    # Create columns for category management
-    st.subheader("Current Categories")
-    
-    for category in categorizer.get_categories():
-        col1, col2 = st.columns([5, 1])
-        with col1:
-            st.text_input("Category", value=category, key=f"cat_{category}", disabled=True)
-        with col2:
-            if st.button("🗑️", key=f"del_{category}"):
-                categorizer.remove_category(category)
-                st.rerun()
-    
-    # File upload and processing section
-    uploaded_files = st.file_uploader("Upload Documents", accept_multiple_files=True)
-    
-    if uploaded_files:
-        if st.button("Test Parse Files"):
-            for file in uploaded_files:
-                try:
-                    content = parser.parse(file)
-                    st.success(f"Successfully parsed {file.name}")
-                except Exception as e:
-                    st.error(f"Error parsing {file.name}: {str(e)}")
+    # Initialize all session state variables
+    if 'categories' not in st.session_state:
+        st.session_state.categories = []
+    if 'uploaded_files_names' not in st.session_state:
+        st.session_state.uploaded_files_names = set()
+    if 'file_categories' not in st.session_state:
+        st.session_state.file_categories = {}
+
+    # Add a sidebar for category management
+    with st.sidebar:
+        st.header("Category Management")
         
-        # Add a session state for controlling classification
-        if 'stop_classification' not in st.session_state:
-            st.session_state.stop_classification = False
+        # Add new category
+        new_category = st.text_input("Add New Category")
+        if st.button("Add Category"):
+            if new_category and new_category not in st.session_state.categories:
+                st.session_state.categories.append(new_category)
+                # Trigger reclassification
+                reclassify_all_documents()
+                st.success(f"Added category: {new_category}")
+            elif new_category in st.session_state.categories:
+                st.warning("This category already exists!")
+            else:
+                st.warning("Please enter a category name!")
+        
+        # Show existing categories with delete buttons
+        if st.session_state.categories:
+            st.subheader("Current Categories")
+            for idx, category in enumerate(st.session_state.categories):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    edited_category = st.text_input(
+                        label=f"Category {idx+1}",
+                        value=category,
+                        key=f"edit_{idx}"
+                    )
+                    if edited_category != category:
+                        st.session_state.categories[idx] = edited_category
+                        # Trigger reclassification on edit
+                        reclassify_all_documents()
+                with col2:
+                    if st.button("🗑️", key=f"delete_{idx}"):
+                        st.session_state.categories.pop(idx)
+                        # Trigger reclassification on delete
+                        reclassify_all_documents()
+                        st.rerun()
+        else:
+            st.info("No categories added yet. Add your first category above!")
+
+    # Main content area
+    st.header("Upload and Classify Documents")
+    
+    uploaded_files = st.file_uploader(
+        "Choose files to upload", 
+        accept_multiple_files=True,
+        type=['pdf', 'txt', 'docx']
+    )
+    
+    # Test Parse Files button - moved before duplicate check
+    if uploaded_files and st.button("Test Parse Files"):
+        for file in uploaded_files:
+            st.write(f"Testing parse for: {file.name}")
+            content, error = read_file_content(file)
+            if error:
+                st.warning(f"Skipping {file.name}: {error}")
+                continue
             
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            classify_button = st.button("Classify Documents")
-        with col2:
-            if st.button("Force Quit Classification"):
-                st.session_state.stop_classification = True
-                st.warning("Classification stopped by user")
-        
-        if classify_button:
-            st.session_state.stop_classification = False
-            for file in uploaded_files:
-                if st.session_state.stop_classification:
-                    st.warning("Classification stopped by user")
-                    break
-                    
-                try:
-                    with st.spinner(f'Classifying {file.name}...'):
-                        result = process_file(file, parser, db_handler, llm_handler, categorizer)
-                        if result:
-                            st.success(f"Classified {file.name} as {result.get('category', 'Unknown')}")
-                except Exception as e:
-                    st.error(f"Error categorizing {file.name}: {str(e)}")
+            st.write("First 200 characters of parsed content:")
+            st.write(content[:200] if content else "No content extracted")
+            st.write("---")
+            file.seek(0)
     
-    # Clear documents button at the bottom
-    if st.button("Clear all documents"):
-        db_handler.clear_all()
-        st.success("All documents cleared from the database")
+    # Classify button
+    if uploaded_files and st.button("🏷️ Classify Documents"):
+        with st.spinner("Classifying documents..."):
+            for file in uploaded_files:
+                if file.name not in st.session_state.uploaded_files_names:
+                    content, error = read_file_content(file)
+                    if error:
+                        st.warning(f"Skipping {file.name}: {error}")
+                        continue
+                        
+                    file.seek(0)
+                    category, error = categorize_file(content, st.session_state.categories)
+                    if error:
+                        st.warning(f"Error categorizing {file.name}: {error}")
+                        continue
+                        
+                    st.session_state.file_categories[file.name] = category
+                    st.session_state.uploaded_files_names.add(file.name)
+                    st.write(f"Classified {file.name} as: {category}")
+                else:
+                    st.info(f"Skipping {file.name} - already classified")
+        st.success("Classification complete!")
+
+    # Display files that are being processed
+    if uploaded_files:
+        st.subheader("Current Documents")
+        for file in uploaded_files:
+            col1, col2, col3, col4 = st.columns([2, 1, 2, 1])
+            
+            with col1:
+                st.write(f"📄 {file.name}")
+            with col2:
+                size = file.size
+                st.write(f"{size/1000:.1f} KB")
+            with col3:
+                current_category = st.session_state.file_categories.get(file.name, "Uncategorized")
+                categories_list = ['Uncategorized'] + st.session_state.categories
+                
+                try:
+                    current_index = categories_list.index(current_category)
+                except ValueError:
+                    current_index = 0
+                
+                new_category = st.selectbox(
+                    label=f"Category for {file.name}",
+                    options=categories_list,
+                    index=current_index,
+                    key=f"cat_{file.name}"
+                )
+            
+            with col4:
+                if st.button("Save", key=f"save_{file.name}"):
+                    st.session_state.file_categories[file.name] = new_category
+                    st.session_state.uploaded_files_names.add(file.name)
+                    st.success(f"Saved {file.name} in {new_category}")
+
+    # Display categorized documents
+    st.header("Categorized Documents")
+    if 'file_categories' in st.session_state and st.session_state.file_categories:
+        # Create tabs for each category including "Uncategorized"
+        all_categories = ['Uncategorized'] + st.session_state.categories
+        tabs = st.tabs(all_categories)
+        
+        # Organize files by category
+        for tab, category in zip(tabs, all_categories):
+            with tab:
+                # Find all files in this category
+                category_files = [
+                    filename for filename, file_category 
+                    in st.session_state.file_categories.items() 
+                    if file_category == category
+                ]
+                
+                if category_files:
+                    for filename in category_files:
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.write(f"📄 {filename}")
+                        with col2:
+                            if st.button("Remove", key=f"remove_{category}_{filename}"):
+                                del st.session_state.file_categories[filename]
+                                st.session_state.uploaded_files_names.remove(filename)
+                                st.rerun()
+                else:
+                    st.write("No documents in this category")
+    else:
+        st.write("No documents have been categorized yet")
+
+    # Add a clear all button
+    if st.button("Clear All Documents"):
+        if 'file_categories' in st.session_state:
+            st.session_state.file_categories = {}
+        st.session_state.uploaded_files_names = set()
+        st.rerun()
+                # Display documents here
+
+def reclassify_all_documents():
+    """Reclassify all documents when categories change"""
+    if not st.session_state.uploaded_files_names:
+        return
+
+    with st.spinner("Reclassifying all documents..."):
+        # Store old classifications for comparison
+        old_classifications = st.session_state.file_categories.copy()
+        
+        # Reclassify each document
+        for file_name in st.session_state.uploaded_files_names:
+            try:
+                content = read_file_content(file_name)
+                if content and not isinstance(content, tuple):  # Check for valid content
+                    new_category = categorize_file(content, st.session_state.categories)
+                    st.session_state.file_categories[file_name] = new_category
+                    
+                    # Show changes in classification
+                    if file_name in old_classifications and old_classifications[file_name] != new_category:
+                        st.info(f"Reclassified: {file_name}\n"
+                               f"From: {old_classifications[file_name]} → To: {new_category}")
+            except Exception as e:
+                st.error(f"Error reclassifying {file_name}: {str(e)}")
+                # Keep old classification if error occurs
+                if file_name in old_classifications:
+                    st.session_state.file_categories[file_name] = old_classifications[file_name]
+        
+        st.success("Reclassification complete!")
 
 if __name__ == "__main__":
     main()
