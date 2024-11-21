@@ -1,13 +1,23 @@
 import chromadb
 from chromadb.config import Settings
+import os
 
 class DatabaseHandler:
     def __init__(self):
         try:
-            self.client = chromadb.Client(Settings(
-                chroma_db_impl="duckdb+parquet",
-                persist_directory="./chroma_db"
-            ))
+            # Check if running on Streamlit Cloud
+            if os.getenv('STREAMLIT_CLOUD'):
+                # Use in-memory database for Streamlit Cloud
+                self.client = chromadb.Client(Settings(
+                    chroma_db_impl="duckdb+parquet",
+                    anonymized_telemetry=False
+                ))
+            else:
+                # Use persistent storage for local development
+                self.client = chromadb.Client(Settings(
+                    chroma_db_impl="duckdb+parquet",
+                    persist_directory="./chroma_db"
+                ))
             
             # Create or get collection
             self.collection = self.client.get_or_create_collection(
