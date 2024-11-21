@@ -1,18 +1,25 @@
 import chromadb
+from chromadb.config import Settings
 
 class DatabaseHandler:
     def __init__(self):
-        # Update the client initialization to use the new syntax
-        self.client = chromadb.PersistentClient(path="./chroma_db")
-        
-        # Create or get collection
-        self.collection = self.client.get_or_create_collection(
-            name="documents",
-            metadata={"hnsw:space": "cosine"}
-        )
-        
-        # Keep track of category structure
-        self.category_tree = {}
+        try:
+            self.client = chromadb.Client(Settings(
+                chroma_db_impl="duckdb+parquet",
+                persist_directory="./chroma_db"
+            ))
+            
+            # Create or get collection
+            self.collection = self.client.get_or_create_collection(
+                name="documents",
+                metadata={"hnsw:space": "cosine"}
+            )
+            
+            # Keep track of category structure
+            self.category_tree = {}
+            
+        except Exception as e:
+            raise Exception(f"Failed to initialize ChromaDB client: {str(e)}")
 
     def add_document(self, document):
         """Add a document to the database"""
