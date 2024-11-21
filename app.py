@@ -160,11 +160,31 @@ def categorize_file(content, categories):
         return "Uncategorized"
 
 def main():
-    # At the start of your main function
-    st.write("Python environment:", os.environ.keys())
-    st.write("Available secret keys:", list(st.secrets.keys()))  # This only shows keys, not values
+    st.title("AI Document Management System")
     
-    st.title("AI-DBMS")
+    # Add instructions in a clean format
+    st.markdown("""
+    ### Instructions
+    1. **Upload your files**
+       - Use the file uploader below to select your documents
+       
+    2. **Select pre-defined categories**
+       - Add or remove categories in the 'Current Categories' section
+       
+    3. **Verify file parsing**
+       - Click on "Test Parse Files" to ensure your files can be read correctly
+       
+    4. **Classify documents**
+       - Click "Classify Documents" to categorize your files
+       - Use "Force Quit" if you need to stop the classification process
+       
+    5. **Recategorizing files**
+       - If you modify categories, click "Clear all documents" at the bottom
+       - Then classify your documents again with the new categories
+    """)
+    
+    # Add a visual separator
+    st.markdown("---")
     
     # Initialize all session state variables
     if 'categories' not in st.session_state:
