@@ -184,6 +184,73 @@ def summarize_file_content(content, file_name):
 def main():
     st.title("AI Document Management System")
     
+    # Initialize all session state variables
+    if 'categories' not in st.session_state:
+        st.session_state.categories = []
+    if 'uploaded_files_names' not in st.session_state:
+        st.session_state.uploaded_files_names = set()
+    if 'file_categories' not in st.session_state:
+        st.session_state.file_categories = {}
+    
+    # Move navigation to sidebar
+    with st.sidebar:
+        st.header("Navigation")
+        page = st.selectbox(
+            "Choose functionality",
+            ["Document Management", "Hierarchical Query Generator"],
+            index=0
+        )
+        
+        # Only show Category Management if we're in Document Management page
+        if page == "Document Management":
+            st.markdown("---")  # Add separator
+            st.header("Category Management")
+            
+            # Add new category
+            new_category = st.text_input("Add New Category")
+            if st.button("Add Category"):
+                if new_category and new_category not in st.session_state.categories:
+                    st.session_state.categories.append(new_category)
+                    # Trigger reclassification
+                    reclassify_all_documents()
+                    st.success(f"Added category: {new_category}")
+                elif new_category in st.session_state.categories:
+                    st.warning("This category already exists!")
+                else:
+                    st.warning("Please enter a category name!")
+            
+            # Show existing categories with delete buttons
+            if st.session_state.categories:
+                st.subheader("Current Categories")
+                for idx, category in enumerate(st.session_state.categories):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        edited_category = st.text_input(
+                            label=f"Category {idx+1}",
+                            value=category,
+                            key=f"edit_{idx}"
+                        )
+                        if edited_category != category:
+                            st.session_state.categories[idx] = edited_category
+                            # Trigger reclassification on edit
+                            reclassify_all_documents()
+                    with col2:
+                        if st.button("🗑️", key=f"delete_{idx}"):
+                            st.session_state.categories.pop(idx)
+                            # Trigger reclassification on delete
+                            reclassify_all_documents()
+                            st.rerun()
+            else:
+                st.info("No categories added yet. Add your first category above!")
+    
+    # Display the selected page
+    if page == "Document Management":
+        document_management_page()
+    else:
+        hierarchical_query_page()
+
+def document_management_page():
+    """Contains all the existing document management functionality"""
     # Add instructions in a clean format
     st.markdown("""
     ### Instructions
@@ -208,47 +275,6 @@ def main():
         st.session_state.uploaded_files_names = set()
     if 'file_categories' not in st.session_state:
         st.session_state.file_categories = {}
-
-    # Add a sidebar for category management
-    with st.sidebar:
-        st.header("Category Management")
-        
-        # Add new category
-        new_category = st.text_input("Add New Category")
-        if st.button("Add Category"):
-            if new_category and new_category not in st.session_state.categories:
-                st.session_state.categories.append(new_category)
-                # Trigger reclassification
-                reclassify_all_documents()
-                st.success(f"Added category: {new_category}")
-            elif new_category in st.session_state.categories:
-                st.warning("This category already exists!")
-            else:
-                st.warning("Please enter a category name!")
-        
-        # Show existing categories with delete buttons
-        if st.session_state.categories:
-            st.subheader("Current Categories")
-            for idx, category in enumerate(st.session_state.categories):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    edited_category = st.text_input(
-                        label=f"Category {idx+1}",
-                        value=category,
-                        key=f"edit_{idx}"
-                    )
-                    if edited_category != category:
-                        st.session_state.categories[idx] = edited_category
-                        # Trigger reclassification on edit
-                        reclassify_all_documents()
-                with col2:
-                    if st.button("🗑️", key=f"delete_{idx}"):
-                        st.session_state.categories.pop(idx)
-                        # Trigger reclassification on delete
-                        reclassify_all_documents()
-                        st.rerun()
-        else:
-            st.info("No categories added yet. Add your first category above!")
 
     # Main content area
     st.header("Upload and Classify Documents")
@@ -422,5 +448,42 @@ def reclassify_all_documents():
         
         st.success("Reclassification complete!")
 
+def hierarchical_query_page():
+    """New page for hierarchical query path generator"""
+    st.markdown("""
+    ### Hierarchical Query Path Generator
+    This tool helps generate hierarchical query paths using clustering algorithms.
+    """)
+    
+    # Add your new functionality here
+    st.write("Upload your data for clustering:")
+    
+    # Example interface elements
+    uploaded_file = st.file_uploader(
+        "Choose a file (CSV/Excel)", 
+        type=['csv', 'xlsx']
+    )
+    
+    if uploaded_file:
+        st.write("Configuration:")
+        col1, col2 = st.columns(2)
+        with col1:
+            n_clusters = st.slider("Number of clusters", 2, 10, 3)
+            max_depth = st.slider("Maximum hierarchy depth", 1, 5, 3)
+        with col2:
+            algorithm = st.selectbox(
+                "Clustering Algorithm",
+                ["Hierarchical", "K-Means", "DBSCAN"]
+            )
+            distance_metric = st.selectbox(
+                "Distance Metric",
+                ["euclidean", "manhattan", "cosine"]
+            )
+        
+        if st.button("Generate Hierarchy"):
+            with st.spinner("Generating hierarchical paths..."):
+                st.write("Hierarchy will be displayed here")
+                # Add your clustering logic here
+    
 if __name__ == "__main__":
     main()
