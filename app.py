@@ -10,6 +10,12 @@ import os
 import threading
 from functools import wraps
 import time
+from sklearn.cluster import KMeans
+from sklearn.metrics import pairwise_distances
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+from collections import defaultdict
+from streamlit_agraph import agraph, Node, Edge, Config
 
 st.set_page_config(page_title="Document Navigator", layout="wide")
 
@@ -449,41 +455,294 @@ def reclassify_all_documents():
         st.success("Reclassification complete!")
 
 def hierarchical_query_page():
-    """New page for hierarchical query path generator"""
+    """Page for hierarchical query path generator"""
     st.markdown("""
     ### Hierarchical Query Path Generator
-    This tool helps generate hierarchical query paths using clustering algorithms.
+    This tool organizes your documents into a hierarchical structure using recursive clustering.
     """)
     
-    # Add your new functionality here
-    st.write("Upload your data for clustering:")
+    # Initialize session state for this page
+    if 'root_categories' not in st.session_state:
+        st.session_state.root_categories = []
     
-    # Example interface elements
-    uploaded_file = st.file_uploader(
-        "Choose a file (CSV/Excel)", 
-        type=['csv', 'xlsx']
+    # Root category management
+    st.subheader("1. Define Root Categories")
+    new_category = st.text_input("Add a root category (e.g., Cars, Planes)")
+    if st.button("Add Root Category"):
+        if new_category and new_category not in st.session_state.root_categories:
+            st.session_state.root_categories.append(new_category)
+            st.success(f"Added root category: {new_category}")
+    
+    # Display and manage root categories
+    if st.session_state.root_categories:
+        st.write("Current root categories:")
+        for idx, category in enumerate(st.session_state.root_categories):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.write(f"• {category}")
+            with col2:
+                if st.button("Remove", key=f"remove_{idx}"):
+                    st.session_state.root_categories.pop(idx)
+                    st.rerun()
+    
+    # Clustering parameters
+    st.subheader("2. Configure Clustering")
+    col1, col2 = st.columns(2)
+    with col1:
+        max_depth = st.slider("Maximum hierarchy depth", 2, 6, 4)
+        min_cluster_size = st.slider("Minimum cluster size", 2, 10, 3)
+    with col2:
+        n_clusters_per_level = st.slider("Max clusters per level", 2, 8, 4)
+    
+    # File upload
+    st.subheader("3. Upload Documents")
+    uploaded_files = st.file_uploader(
+        "Choose documents to cluster", 
+        accept_multiple_files=True,
+        type=['pdf', 'txt', 'docx']
     )
     
-    if uploaded_file:
-        st.write("Configuration:")
-        col1, col2 = st.columns(2)
-        with col1:
-            n_clusters = st.slider("Number of clusters", 2, 10, 3)
-            max_depth = st.slider("Maximum hierarchy depth", 1, 5, 3)
-        with col2:
-            algorithm = st.selectbox(
-                "Clustering Algorithm",
-                ["Hierarchical", "K-Means", "DBSCAN"]
-            )
-            distance_metric = st.selectbox(
-                "Distance Metric",
-                ["euclidean", "manhattan", "cosine"]
-            )
-        
+    # Process and cluster
+    if uploaded_files and st.session_state.root_categories:
         if st.button("Generate Hierarchy"):
-            with st.spinner("Generating hierarchical paths..."):
-                st.write("Hierarchy will be displayed here")
-                # Add your clustering logic here
+            with st.spinner("Processing documents and generating hierarchy..."):
+                try:
+                    # Process documents
+                    documents = process_documents(uploaded_files)
+                    
+                    # Generate clusters
+                    hierarchy = generate_hierarchy(
+                        documents,
+                        st.session_state.root_categories,
+                        max_depth,
+                        min_cluster_size,
+                        n_clusters_per_level
+                    )
+                    
+                    # Display results
+                    st.subheader("Generated Hierarchy")
+                    display_hierarchy(hierarchy)
+                    
+                except Exception as e:
+                    st.error(f"Error generating hierarchy: {str(e)}")
+    elif not st.session_state.root_categories:
+        st.warning("Please add at least one root category before processing.")
+    elif not uploaded_files:
+        st.warning("Please upload documents to process.")
+
+def process_documents(files):
+    """Process uploaded documents and extract text content"""
+    documents = []
+    for file in files:
+        content, error = read_file_content(file)
+        if error:
+            st.warning(f"Skipping {file.name}: {error}")
+            continue
+        documents.append({
+            'name': file.name,
+            'content': content
+        })
+        file.seek(0)
+    return documents
+
+def generate_hierarchy(documents, root_categories, max_depth, min_cluster_size, n_clusters_per_level):
+    """Generate hierarchical clusters"""
+    # Convert documents to TF-IDF vectors with better parameters for our use case
+    vectorizer = TfidfVectorizer(
+        max_features=1000,
+        stop_words='english',
+        ngram_range=(1, 2),
+        min_df=2,  # Ignore terms that appear in less than 2 documents
+        max_df=0.95  # Ignore terms that appear in more than 95% of documents
+    )
     
+    # Create document vectors
+    doc_vectors = vectorizer.fit_transform([doc['content'] for doc in documents])
+    
+    # Create root category vectors with more context
+    root_category_texts = []
+    for category in root_categories:
+        # Add more context to each category
+        if category.lower() == 'cars':
+            context = """cars vehicles automobile automotive motor vehicle sedan SUV 
+                        Toyota Honda BMW Mercedes engine wheels driving"""
+        elif category.lower() == 'planes':
+            context = """planes aircraft aviation airplane jets flying flight 
+                        Boeing Airbus aircraft aviation aerospace flying pilot"""
+        root_category_texts.append(context)
+    
+    category_vectors = vectorizer.transform(root_category_texts)
+    
+    # Initial clustering by root categories
+    hierarchy = {category: [] for category in root_categories}
+    
+    # Assign documents to root categories with improved similarity calculation
+    for idx, doc in enumerate(documents):
+        doc_vector = doc_vectors[idx]
+        # Calculate similarities
+        similarities = (doc_vector @ category_vectors.T).toarray().flatten()
+        category_idx = np.argmax(similarities)
+        category = root_categories[category_idx]
+        hierarchy[category].append(doc)
+    
+    def cluster_level(docs, current_depth=0):
+        if (current_depth >= max_depth or 
+            len(docs) < min_cluster_size * 2):
+            return {'documents': docs}
+        
+        # Create vectors for this subset of documents
+        local_vectors = vectorizer.transform([d['content'] for d in docs])
+        
+        # Determine number of clusters
+        n_clusters = min(len(docs) // min_cluster_size, n_clusters_per_level)
+        if n_clusters < 2:
+            return {'documents': docs}
+        
+        # Apply K-means
+        kmeans = KMeans(n_clusters=n_clusters)
+        labels = kmeans.fit_predict(local_vectors)
+        
+        # Organize documents by cluster
+        clusters = defaultdict(list)
+        for i, doc in enumerate(docs):
+            clusters[labels[i]].append(doc)
+        
+        # Recursively cluster each group
+        result = {}
+        for label, cluster_docs in clusters.items():
+            try:
+                # Generate cluster name
+                if current_depth > 0:
+                    terms = get_cluster_terms(cluster_docs, vectorizer)
+                    cluster_name = f"Topics: {terms}"
+                else:
+                    cluster_name = f"Group {label + 1}"
+                
+                result[cluster_name] = cluster_level(
+                    cluster_docs,
+                    current_depth + 1
+                )
+            except Exception as e:
+                st.error(f"Error processing cluster: {str(e)}")
+                cluster_name = f"Group {label + 1}"
+                result[cluster_name] = {'documents': cluster_docs}
+        
+        return result
+    
+    # Process each root category
+    for category in root_categories:
+        if len(hierarchy[category]) > min_cluster_size:
+            hierarchy[category] = cluster_level(hierarchy[category], 1)
+        else:
+            hierarchy[category] = {'documents': hierarchy[category]}
+    
+    # Print debug information
+    st.write("Document distribution across root categories:")
+    for category in root_categories:
+        doc_count = len(hierarchy[category].get('documents', []))
+        if isinstance(hierarchy[category], dict):
+            for subcat in hierarchy[category].values():
+                if isinstance(subcat, dict):
+                    doc_count += len(subcat.get('documents', []))
+        st.write(f"{category}: {doc_count} documents")
+    
+    return hierarchy
+
+def display_hierarchy(hierarchy):
+    """Display the hierarchical structure as an interactive graph"""
+    nodes = []
+    edges = []
+    
+    def process_level(data, parent_id=None, level=0):
+        for category, content in data.items():
+            # Create unique ID for this node
+            current_id = f"{level}_{category}"
+            
+            # Add node
+            nodes.append(Node(
+                id=current_id,
+                label=category,
+                size=20,
+                shape="dot" if isinstance(content, dict) else "square"
+            ))
+            
+            # Add edge from parent if exists
+            if parent_id:
+                edges.append(Edge(source=parent_id, target=current_id))
+            
+            if isinstance(content, dict):
+                # Recursive call for nested categories
+                if 'documents' in content:
+                    # Add document nodes
+                    for doc in content['documents']:
+                        doc_id = f"doc_{doc['name']}"
+                        nodes.append(Node(
+                            id=doc_id,
+                            label=doc['name'],
+                            size=15,
+                            shape="square",
+                            color="#1f77b4"
+                        ))
+                        edges.append(Edge(source=current_id, target=doc_id))
+                else:
+                    # Process next level
+                    process_level(content, current_id, level + 1)
+            else:
+                # Add document nodes for leaf categories
+                for doc in content:
+                    doc_id = f"doc_{doc['name']}"
+                    nodes.append(Node(
+                        id=doc_id,
+                        label=doc['name'],
+                        size=15,
+                        shape="square",
+                        color="#1f77b4"
+                    ))
+                    edges.append(Edge(source=current_id, target=doc_id))
+    
+    # Process the hierarchy
+    process_level(hierarchy)
+    
+    # Configure the graph
+    config = Config(
+        width=750,
+        height=950,
+        directed=True,
+        physics=True,
+        hierarchical=True,
+        nodeHighlightBehavior=True,
+        highlightColor="#F7A7A6",
+        collapsible=True,
+        node={'labelProperty': 'label'},
+        link={'labelProperty': 'label', 'renderLabel': False}
+    )
+    
+    # Display the graph
+    st.write("Click and drag nodes to explore the hierarchy:")
+    agraph(nodes=nodes, edges=edges, config=config)
+
+def get_cluster_terms(docs, vectorizer, n_terms=3):
+    """Get most representative terms for a cluster"""
+    try:
+        # Get feature names
+        feature_names = vectorizer.get_feature_names_out()
+        
+        # Get TF-IDF matrix for cluster documents
+        tfidf_matrix = vectorizer.transform([d['content'] for d in docs])
+        
+        # Calculate average TF-IDF scores across documents
+        avg_tfidf = np.mean(tfidf_matrix.toarray(), axis=0)
+        
+        # Get indices of top terms
+        top_indices = np.argsort(avg_tfidf)[-n_terms:][::-1]
+        
+        # Get top terms
+        top_terms = [feature_names[i] for i in top_indices]
+        
+        return ", ".join(top_terms)
+    except Exception as e:
+        st.error(f"Error generating cluster terms: {str(e)}")
+        return f"Group {hash(str(docs))[:5]}"  # Fallback cluster name
+
 if __name__ == "__main__":
     main()
