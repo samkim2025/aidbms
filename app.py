@@ -159,6 +159,28 @@ def categorize_file(content, categories):
         print(f"Categorization error: {str(e)}")
         return "Uncategorized"
 
+@timeout_handler(10)
+def summarize_file_content(content, file_name):
+    """Generate a summary for file content with timeout"""
+    prompt = f"""
+    Create a very brief summary of the following document in 1-2 short sentences. 
+    Be concise and focus on the main topic only.
+    Start with: "{file_name} is a {file_name.split('.')[-1]} file about"
+    
+    Document content:
+    ---
+    {content[:3000]}
+    ---
+    
+    Guidelines:
+    - Keep the summary under 200 characters
+    - Focus on the core topic only
+    - Use simple, direct language
+    - Complete sentences only (no mid-sentence cutoffs)
+    """
+    
+    return llm_handler.get_response(prompt)
+
 def main():
     st.title("AI Document Management System")
     
@@ -346,6 +368,30 @@ def main():
         st.session_state.uploaded_files_names = set()
         st.rerun()
                 # Display documents here
+
+    # Add Summarize Files section
+    st.header("Summarize Files")
+    if uploaded_files:
+        for file in uploaded_files:
+            st.write(f"📄 {file.name}")
+            if st.button("Summarize", key=f"summarize_{file.name}"):
+                with st.spinner(f"Summarizing {file.name}..."):
+                    try:
+                        content, error = read_file_content(file)
+                        if error:
+                            st.warning(f"Skipping {file.name}: {error}")
+                            continue
+                        
+                        summary_tuple = summarize_file_content(content, file.name)
+                        if isinstance(summary_tuple, tuple):
+                            summary = summary_tuple[0]  # Get the actual summary text
+                            st.write("Summary:")
+                            st.markdown(f"_{summary}_")
+                            st.write("---")
+                    except Exception as e:
+                        st.error(f"Error generating summary: {str(e)}")
+                    finally:
+                        file.seek(0)  # Reset file pointer
 
 def reclassify_all_documents():
     """Reclassify all documents when categories change"""
