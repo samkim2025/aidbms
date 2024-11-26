@@ -34,7 +34,7 @@ class LLMHandler:
                     "top_p": 0.8,
                 }
             )
-            return response.text
+            return response.text.strip()
         except Exception as e:
             st.write(f"API call failed: {str(e)}")
             raise
