@@ -456,293 +456,343 @@ def reclassify_all_documents():
 
 def hierarchical_query_page():
     """Page for hierarchical query path generator"""
-    st.markdown("""
-    ### Hierarchical Query Path Generator
-    This tool organizes your documents into a hierarchical structure using recursive clustering.
-    """)
+    st.title("Hierarchical Query Path Generator")
     
-    # Initialize session state for this page
-    if 'root_categories' not in st.session_state:
-        st.session_state.root_categories = []
+    # Initialize session state
+    if 'hierarchy_depth' not in st.session_state:
+        st.session_state.hierarchy_depth = None
+    if 'hierarchy' not in st.session_state:
+        st.session_state.hierarchy = {}
+    if 'uploaded_files' not in st.session_state:
+        st.session_state.uploaded_files = []
     
-    # Root category management
-    st.subheader("1. Define Root Categories")
-    new_category = st.text_input("Add a root category (e.g., Cars, Planes)")
-    if st.button("Add Root Category"):
-        if new_category and new_category not in st.session_state.root_categories:
-            st.session_state.root_categories.append(new_category)
-            st.success(f"Added root category: {new_category}")
+    # Create two columns for main layout
+    left_col, right_col = st.columns([2, 3])
     
-    # Display and manage root categories
-    if st.session_state.root_categories:
-        st.write("Current root categories:")
-        for idx, category in enumerate(st.session_state.root_categories):
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.write(f"• {category}")
-            with col2:
-                if st.button("Remove", key=f"remove_{idx}"):
-                    st.session_state.root_categories.pop(idx)
-                    st.rerun()
-    
-    # Clustering parameters
-    st.subheader("2. Configure Clustering")
-    col1, col2 = st.columns(2)
-    with col1:
-        max_depth = st.slider("Maximum hierarchy depth", 2, 6, 4)
-        min_cluster_size = st.slider("Minimum cluster size", 2, 10, 3)
-    with col2:
-        n_clusters_per_level = st.slider("Max clusters per level", 2, 8, 4)
-    
-    # File upload
-    st.subheader("3. Upload Documents")
-    uploaded_files = st.file_uploader(
-        "Choose documents to cluster", 
-        accept_multiple_files=True,
-        type=['pdf', 'txt', 'docx']
-    )
-    
-    # Process and cluster
-    if uploaded_files and st.session_state.root_categories:
-        if st.button("Generate Hierarchy"):
-            with st.spinner("Processing documents and generating hierarchy..."):
-                try:
-                    # Process documents
-                    documents = process_documents(uploaded_files)
-                    
-                    # Generate clusters
-                    hierarchy = generate_hierarchy(
-                        documents,
-                        st.session_state.root_categories,
-                        max_depth,
-                        min_cluster_size,
-                        n_clusters_per_level
-                    )
-                    
-                    # Display results
-                    st.subheader("Generated Hierarchy")
-                    display_hierarchy(hierarchy)
-                    
-                except Exception as e:
-                    st.error(f"Error generating hierarchy: {str(e)}")
-    elif not st.session_state.root_categories:
-        st.warning("Please add at least one root category before processing.")
-    elif not uploaded_files:
-        st.warning("Please upload documents to process.")
-
-def process_documents(files):
-    """Process uploaded documents and extract text content"""
-    documents = []
-    for file in files:
-        content, error = read_file_content(file)
-        if error:
-            st.warning(f"Skipping {file.name}: {error}")
-            continue
-        documents.append({
-            'name': file.name,
-            'content': content
-        })
-        file.seek(0)
-    return documents
-
-def generate_hierarchy(documents, root_categories, max_depth, min_cluster_size, n_clusters_per_level):
-    """Generate hierarchical clusters"""
-    # Convert documents to TF-IDF vectors with better parameters for our use case
-    vectorizer = TfidfVectorizer(
-        max_features=1000,
-        stop_words='english',
-        ngram_range=(1, 2),
-        min_df=2,  # Ignore terms that appear in less than 2 documents
-        max_df=0.95  # Ignore terms that appear in more than 95% of documents
-    )
-    
-    # Create document vectors
-    doc_vectors = vectorizer.fit_transform([doc['content'] for doc in documents])
-    
-    # Create root category vectors with more context
-    root_category_texts = []
-    for category in root_categories:
-        # Add more context to each category
-        if category.lower() == 'cars':
-            context = """cars vehicles automobile automotive motor vehicle sedan SUV 
-                        Toyota Honda BMW Mercedes engine wheels driving"""
-        elif category.lower() == 'planes':
-            context = """planes aircraft aviation airplane jets flying flight 
-                        Boeing Airbus aircraft aviation aerospace flying pilot"""
-        root_category_texts.append(context)
-    
-    category_vectors = vectorizer.transform(root_category_texts)
-    
-    # Initial clustering by root categories
-    hierarchy = {category: [] for category in root_categories}
-    
-    # Assign documents to root categories with improved similarity calculation
-    for idx, doc in enumerate(documents):
-        doc_vector = doc_vectors[idx]
-        # Calculate similarities
-        similarities = (doc_vector @ category_vectors.T).toarray().flatten()
-        category_idx = np.argmax(similarities)
-        category = root_categories[category_idx]
-        hierarchy[category].append(doc)
-    
-    def cluster_level(docs, current_depth=0):
-        if (current_depth >= max_depth or 
-            len(docs) < min_cluster_size * 2):
-            return {'documents': docs}
+    with left_col:
+        st.markdown("""
+        ### 📊 Hierarchy Setup
+        Follow these steps to create your category hierarchy:
+        1. Set the depth of your hierarchy
+        2. Define categories at each level
+        3. Upload your documents
+        4. Generate the hierarchy
+        """)
         
-        # Create vectors for this subset of documents
-        local_vectors = vectorizer.transform([d['content'] for d in docs])
-        
-        # Determine number of clusters
-        n_clusters = min(len(docs) // min_cluster_size, n_clusters_per_level)
-        if n_clusters < 2:
-            return {'documents': docs}
-        
-        # Apply K-means
-        kmeans = KMeans(n_clusters=n_clusters)
-        labels = kmeans.fit_predict(local_vectors)
-        
-        # Organize documents by cluster
-        clusters = defaultdict(list)
-        for i, doc in enumerate(docs):
-            clusters[labels[i]].append(doc)
-        
-        # Recursively cluster each group
-        result = {}
-        for label, cluster_docs in clusters.items():
-            try:
-                # Generate cluster name
-                if current_depth > 0:
-                    terms = get_cluster_terms(cluster_docs, vectorizer)
-                    cluster_name = f"Topics: {terms}"
-                else:
-                    cluster_name = f"Group {label + 1}"
-                
-                result[cluster_name] = cluster_level(
-                    cluster_docs,
-                    current_depth + 1
+        # Step 1: Set hierarchy depth with visual feedback
+        st.markdown("#### Step 1: Set Hierarchy Depth")
+        depth_container = st.container()
+        with depth_container:
+            if st.session_state.hierarchy_depth is None:
+                depth = st.select_slider(
+                    "Select hierarchy depth",
+                    options=[2, 3, 4],
+                    value=2,
+                    help="Choose how many levels deep your category hierarchy should be"
                 )
-            except Exception as e:
-                st.error(f"Error processing cluster: {str(e)}")
-                cluster_name = f"Group {label + 1}"
-                result[cluster_name] = {'documents': cluster_docs}
+                if st.button("✨ Initialize Hierarchy", type="primary"):
+                    st.session_state.hierarchy_depth = depth
+                    st.session_state.hierarchy = {}
+                    st.rerun()
+            else:
+                st.info(f"🌳 Current hierarchy depth: {st.session_state.hierarchy_depth} levels")
+                if st.button("🔄 Reset Hierarchy", type="secondary"):
+                    st.session_state.hierarchy_depth = None
+                    st.session_state.hierarchy = {}
+                    st.rerun()
         
-        return result
-    
-    # Process each root category
-    for category in root_categories:
-        if len(hierarchy[category]) > min_cluster_size:
-            hierarchy[category] = cluster_level(hierarchy[category], 1)
+        # Step 3: File Upload
+        st.markdown("#### Step 3: Upload Documents")
+        uploaded_files = st.file_uploader(
+            "Choose documents to classify",
+            accept_multiple_files=True,
+            type=['pdf', 'txt', 'docx']
+        )
+        if uploaded_files:
+            st.session_state.uploaded_files = uploaded_files
+            st.success(f"📁 {len(uploaded_files)} documents uploaded")
+        
+        # Step 4: Generate Hierarchy
+        st.markdown("#### Step 4: Generate Hierarchy")
+        if st.session_state.hierarchy and st.session_state.uploaded_files:
+            if st.button("🚀 Generate Hierarchy", type="primary"):
+                with st.spinner("Processing files and generating hierarchy..."):
+                    try:
+                        # Process files
+                        results = process_files_for_hierarchy(
+                            st.session_state.uploaded_files,
+                            st.session_state.hierarchy
+                        )
+                        
+                        # Store results in session state
+                        st.session_state.hierarchy_results = results
+                        
+                        # Show success message
+                        st.success("✅ Hierarchy generated successfully!")
+                        
+                        # Create visualization
+                        nodes, edges, config = visualize_hierarchy_results(results)
+                        
+                        # Display visualization
+                        st.markdown("### Hierarchy Visualization")
+                        agraph(nodes=nodes, edges=edges, config=config)
+                        
+                        # Export option
+                        st.markdown("### Export Results")
+                        csv = export_hierarchy_results(results)
+                        st.download_button(
+                            label="📥 Download Results as CSV",
+                            data=csv,
+                            file_name="hierarchy_results.csv",
+                            mime="text/csv"
+                        )
+                        
+                        # Display results in expandable sections
+                        st.markdown("### Detailed Results")
+                        for doc_name, doc_info in results.items():
+                            with st.expander(f"📄 {doc_name}"):
+                                st.write(f"**Category Path:** {doc_info['path']}")
+                                st.write(f"**Preview:** {doc_info['content']}")
+                    except Exception as e:
+                        st.error(f"Error generating hierarchy: {str(e)}")
         else:
-            hierarchy[category] = {'documents': hierarchy[category]}
+            st.warning("⚠️ Please complete steps 1-3 first")
     
-    # Print debug information
-    st.write("Document distribution across root categories:")
-    for category in root_categories:
-        doc_count = len(hierarchy[category].get('documents', []))
-        if isinstance(hierarchy[category], dict):
-            for subcat in hierarchy[category].values():
-                if isinstance(subcat, dict):
-                    doc_count += len(subcat.get('documents', []))
-        st.write(f"{category}: {doc_count} documents")
-    
-    return hierarchy
+    with right_col:
+        # Step 2: Category Definition
+        if st.session_state.hierarchy_depth is not None:
+            st.markdown("#### Step 2: Define Categories")
+            
+            # Create tabs for each level
+            level_tabs = st.tabs([f"Level {i+1}" for i in range(st.session_state.hierarchy_depth)])
+            
+            def add_category(parent_path="", level=1):
+                with level_tabs[level-1]:
+                    # Show current path
+                    if parent_path:
+                        st.markdown(f"*Current path: {parent_path}*")
+                    
+                    # Add new category input
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        new_cat = st.text_input(
+                            "Category name",
+                            key=f"new_cat_{parent_path}_{level}",
+                            placeholder="Enter category name..."
+                        )
+                    with col2:
+                        add_button = st.button(
+                            "➕ Add",
+                            key=f"add_{parent_path}_{level}",
+                            type="primary"
+                        )
+                    
+                    if add_button and new_cat:
+                        current_level = st.session_state.hierarchy
+                        path_parts = parent_path.split("/") if parent_path else []
+                        
+                        for part in path_parts:
+                            if part:
+                                current_level = current_level[part]
+                        
+                        if isinstance(current_level, dict):
+                            if new_cat not in current_level:
+                                current_level[new_cat] = {} if level < st.session_state.hierarchy_depth else None
+                                st.success(f"✅ Added: {new_cat}")
+                                st.rerun()
+                    
+                    # Display existing categories
+                    if st.session_state.hierarchy:
+                        st.markdown("##### Current Categories:")
+                        current_level = st.session_state.hierarchy
+                        for part in parent_path.split("/"):
+                            if part:
+                                current_level = current_level[part]
+                        
+                        if isinstance(current_level, dict):
+                            for category in current_level:
+                                cat_col1, cat_col2 = st.columns([4, 1])
+                                with cat_col1:
+                                    st.markdown(f"🔹 {category}")
+                                with cat_col2:
+                                    if st.button("🗑️", key=f"del_{parent_path}_{category}"):
+                                        del current_level[category]
+                                        st.rerun()
+                                
+                                # Recursively add subcategories
+                                if level < st.session_state.hierarchy_depth:
+                                    new_path = f"{parent_path}/{category}" if parent_path else category
+                                    add_category(new_path, level + 1)
+            
+            # Start building hierarchy from root
+            add_category()
+            
+            # Display current complete hierarchy
+            st.markdown("#### Complete Hierarchy Preview")
+            if st.session_state.hierarchy:
+                def display_hierarchy(data, level=0):
+                    result = ""
+                    indent = "    " * level
+                    for category, subcategories in data.items():
+                        result += f"{indent}📁 {category}\n"
+                        if isinstance(subcategories, dict):
+                            result += display_hierarchy(subcategories, level + 1)
+                    return result
+                
+                st.code(display_hierarchy(st.session_state.hierarchy), language="plaintext")
+            else:
+                st.info("Start adding categories to see the hierarchy preview")
 
-def display_hierarchy(hierarchy):
-    """Display the hierarchical structure as an interactive graph"""
+def process_files_for_hierarchy(files, hierarchy):
+    """Process files and classify them according to the defined hierarchy"""
+    processed_results = {}
+    
+    for file in files:
+        try:
+            # Read file content
+            content, error = read_file_content(file)
+            if error:
+                continue
+            
+            # Find the best matching path in hierarchy
+            best_path = find_category_path(content, hierarchy)
+            
+            # Store result
+            processed_results[file.name] = {
+                'path': best_path,
+                'content': content[:200] + "..."  # Store preview
+            }
+            
+        except Exception as e:
+            st.error(f"Error processing {file.name}: {str(e)}")
+    
+    return processed_results
+
+def find_category_path(content, hierarchy, current_path=""):
+    """Recursively find the best matching category path for the content"""
+    best_score = 0
+    best_path = "Uncategorized"
+    
+    for category, subcategories in hierarchy.items():
+        # Calculate match score for current category
+        prompt = f"""
+        Rate how well this document matches the category '{category}'.
+        
+        Document excerpt:
+        {content[:1000]}...
+        
+        Instructions:
+        - Respond with ONLY a number between 0 and 1
+        - Use 1 for perfect match
+        - Use 0 for no match
+        - Do not include any explanation
+        - Just the number, nothing else
+        
+        Rating:"""
+        
+        try:
+            response = llm_handler.get_response(prompt)
+            # Clean the response and extract the number
+            response = response.strip().split()[0]  # Take first word only
+            # Remove any non-numeric characters except decimal point
+            response = ''.join(c for c in response if c.isdigit() or c == '.')
+            
+            if response:
+                score = float(response)
+                if score > best_score:
+                    best_score = score
+                    new_path = f"{current_path}/{category}" if current_path else category
+                    best_path = new_path
+                    
+                    # If there are subcategories and score is good enough, go deeper
+                    if isinstance(subcategories, dict) and score > 0.5:
+                        sub_path = find_category_path(content, subcategories, new_path)
+                        if sub_path != "Uncategorized":
+                            best_path = sub_path
+                        
+        except Exception as e:
+            print(f"Error processing category {category}: {str(e)}")
+            continue
+    
+    return best_path
+
+def visualize_hierarchy_results(hierarchy_results):
+    """Create an interactive visualization of the hierarchy results"""
     nodes = []
     edges = []
     
-    def process_level(data, parent_id=None, level=0):
-        for category, content in data.items():
-            # Create unique ID for this node
-            current_id = f"{level}_{category}"
-            
-            # Add node
+    # Create nodes for each category level
+    def add_category_nodes(hierarchy, parent_id=None, level=0):
+        for category, subcategories in hierarchy.items():
+            current_id = f"cat_{level}_{category}"
             nodes.append(Node(
                 id=current_id,
                 label=category,
                 size=20,
-                shape="dot" if isinstance(content, dict) else "square"
+                color="#ff9999",  # Red-ish for categories
+                shape="dot"
             ))
             
-            # Add edge from parent if exists
             if parent_id:
                 edges.append(Edge(source=parent_id, target=current_id))
             
-            if isinstance(content, dict):
-                # Recursive call for nested categories
-                if 'documents' in content:
-                    # Add document nodes
-                    for doc in content['documents']:
-                        doc_id = f"doc_{doc['name']}"
-                        nodes.append(Node(
-                            id=doc_id,
-                            label=doc['name'],
-                            size=15,
-                            shape="square",
-                            color="#1f77b4"
-                        ))
-                        edges.append(Edge(source=current_id, target=doc_id))
-                else:
-                    # Process next level
-                    process_level(content, current_id, level + 1)
-            else:
-                # Add document nodes for leaf categories
-                for doc in content:
-                    doc_id = f"doc_{doc['name']}"
-                    nodes.append(Node(
-                        id=doc_id,
-                        label=doc['name'],
-                        size=15,
-                        shape="square",
-                        color="#1f77b4"
-                    ))
-                    edges.append(Edge(source=current_id, target=doc_id))
+            if isinstance(subcategories, dict):
+                add_category_nodes(subcategories, current_id, level + 1)
     
-    # Process the hierarchy
-    process_level(hierarchy)
+    # Add document nodes
+    def add_document_nodes(results):
+        for doc_name, doc_info in results.items():
+            doc_id = f"doc_{doc_name}"
+            nodes.append(Node(
+                id=doc_id,
+                label=doc_name,
+                size=15,
+                color="#99ff99",  # Green-ish for documents
+                shape="square"
+            ))
+            
+            # Connect to its category
+            path_parts = doc_info['path'].split('/')
+            target_id = f"cat_{len(path_parts)-1}_{path_parts[-1]}"
+            edges.append(Edge(source=target_id, target=doc_id))
+    
+    # Create the visualization
+    add_category_nodes(st.session_state.hierarchy)
+    add_document_nodes(hierarchy_results)
     
     # Configure the graph
     config = Config(
-        width=750,
-        height=950,
+        width=800,
+        height=600,
         directed=True,
         physics=True,
         hierarchical=True,
         nodeHighlightBehavior=True,
         highlightColor="#F7A7A6",
-        collapsible=True,
-        node={'labelProperty': 'label'},
-        link={'labelProperty': 'label', 'renderLabel': False}
+        collapsible=True
     )
     
-    # Display the graph
-    st.write("Click and drag nodes to explore the hierarchy:")
-    agraph(nodes=nodes, edges=edges, config=config)
+    return nodes, edges, config
 
-def get_cluster_terms(docs, vectorizer, n_terms=3):
-    """Get most representative terms for a cluster"""
-    try:
-        # Get feature names
-        feature_names = vectorizer.get_feature_names_out()
-        
-        # Get TF-IDF matrix for cluster documents
-        tfidf_matrix = vectorizer.transform([d['content'] for d in docs])
-        
-        # Calculate average TF-IDF scores across documents
-        avg_tfidf = np.mean(tfidf_matrix.toarray(), axis=0)
-        
-        # Get indices of top terms
-        top_indices = np.argsort(avg_tfidf)[-n_terms:][::-1]
-        
-        # Get top terms
-        top_terms = [feature_names[i] for i in top_indices]
-        
-        return ", ".join(top_terms)
-    except Exception as e:
-        st.error(f"Error generating cluster terms: {str(e)}")
-        return f"Group {hash(str(docs))[:5]}"  # Fallback cluster name
+def export_hierarchy_results(hierarchy_results):
+    """Export hierarchy results to CSV"""
+    import pandas as pd
+    import io
+    
+    # Create DataFrame
+    data = []
+    for doc_name, doc_info in hierarchy_results.items():
+        data.append({
+            'Document': doc_name,
+            'Category Path': doc_info['path'],
+            'Preview': doc_info['content']
+        })
+    
+    df = pd.DataFrame(data)
+    
+    # Convert to CSV
+    csv = df.to_csv(index=False)
+    return csv
 
 if __name__ == "__main__":
     main()
