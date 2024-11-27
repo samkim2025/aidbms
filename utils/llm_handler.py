@@ -1,19 +1,19 @@
 import os
 import time
-import google.generativeai as genai
 import streamlit as st
 from tenacity import retry, stop_after_attempt, wait_exponential
+from groq import Groq
 
 class LLMHandler:
     def __init__(self):
         # Initialize API key
-        api_key = st.secrets["GOOGLE_API_KEY"]
+        api_key = st.secrets["GROQ_API_KEY"]
         if not api_key:
-            raise ValueError("No GOOGLE_API_KEY found in secrets")
+            raise ValueError("No GROQ_API_KEY found in secrets")
             
-        # Configure Gemini
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-pro')
+        # Configure Groq
+        self.client = Groq(api_key=api_key)
+        self.model = "mixtral-8x7b-32768"  # Groq's recommended model
         
         # Configuration
         self.chunk_size = 1000
@@ -24,17 +24,19 @@ class LLMHandler:
         wait=wait_exponential(multiplier=1, min=2, max=6)
     )
     def get_response(self, prompt: str) -> str:
-        """Get response from Gemini API"""
+        """Get response from Groq API"""
         try:
-            response = self.model.generate_content(
-                prompt,
-                generation_config={
-                    "temperature": 0.3,
-                    "max_output_tokens": 100,
-                    "top_p": 0.8,
-                }
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant focused on document classification."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=100,
+                top_p=0.8,
             )
-            return response.text.strip()
+            return completion.choices[0].message.content.strip()
         except Exception as e:
             st.write(f"API call failed: {str(e)}")
             raise
