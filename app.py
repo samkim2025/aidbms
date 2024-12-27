@@ -66,7 +66,7 @@ def read_file_content(file):
         if file_type == 'pdf':
             content = PdfParser.parse(file)
             if not content:
-                st.warning(f"Could not extract text from {file.name} (maybe scanned).")
+                st.warning(f"Could not extract text from {file.name}. Possibly scanned or protected PDF.")
             return content
         elif file_type == 'txt':
             return TextParser.parse(file)
@@ -79,7 +79,7 @@ def read_file_content(file):
         return ""
 
 ###############################################################################
-# SECTION 2: BASIC TOP-LEVEL CATEGORIZATION (DOCUMENT MANAGEMENT)
+# SECTION 2: TOP-LEVEL CATEGORIZATION (DOCUMENT MANAGEMENT)
 ###############################################################################
 
 @timeout_handler(5)
@@ -93,7 +93,7 @@ def categorize_file(content, categories):
     
     prompt = f"""
     You are an expert classifier. Categorize this text into exactly ONE of these 
-    top-level categories: {', '.join(categories)}. 
+    top-level categories: {', '.join(categories)}.
     
     If it doesn't match well, return 'Uncategorized'.
 
@@ -140,7 +140,7 @@ def reclassify_all_documents():
         st.success("Reclassification complete!")
 
 ###############################################################################
-# SECTION 3: SUMMARIZE
+# SECTION 3: SUMMARIZE FILES
 ###############################################################################
 
 @timeout_handler(10)
@@ -220,6 +220,7 @@ def main():
     else:
         hierarchical_query_page()
 
+
 ###############################################################################
 # SECTION 5: DOCUMENT MANAGEMENT PAGE
 ###############################################################################
@@ -288,7 +289,12 @@ def document_management_page():
                     idx = catops.index(curr)
                 except ValueError:
                     idx = 0
-                newval = st.selectbox(f"Category for {f.name}", catops, index=idx, key=f"cat_{f.name}")
+                newval = st.selectbox(
+                    f"Category for {f.name}",
+                    catops,
+                    index=idx,
+                    key=f"cat_{f.name}"
+                )
             with c4:
                 if st.button("Save", key=f"save_{f.name}"):
                     st.session_state.file_categories[f.name] = newval
@@ -347,309 +353,57 @@ def document_management_page():
                         f.seek(0)
 
 ###############################################################################
-# SECTION 6: HIERARCHICAL CLASSIFICATION PAGE
+# SECTION 6: TITLE-BASED HIERARCHICAL CLASSIFICATION
 ###############################################################################
 
-def hierarchical_query_page():
+def classify_by_filename(filename, hierarchy):
     """
-    Implements a 'go as deep as possible' approach:
-    - If parent is above threshold, we still check children
-    - Even if child is lower than parent but >= threshold, we prefer the child
-    - This allows multi-level classification
+    Title-based classification for the "Hierarchical Query Generator":
+    We traverse the hierarchy and see which categories appear in the filename 
+    (case-insensitive). We pick the **deepest** matching path we can find.
+    If no match at all, return "Uncategorized".
+
+    Example: if filename = "Commercial_Boeing_787.pdf" 
+      - see if "Planes" is in name
+      - see if "Commercial" is in name
+      - see if "Boeing" is in name
+    If it matches "Planes/Commercial/Boeing", that's the final path.
     """
-    st.title("Hierarchical Query Path Generator")
-
-    if 'hierarchy_depth' not in st.session_state:
-        st.session_state.hierarchy_depth = None
-    if 'hierarchy' not in st.session_state:
-        st.session_state.hierarchy = {}
-    if 'uploaded_files' not in st.session_state:
-        st.session_state.uploaded_files = []
-
-    left, right = st.columns([2,3])
-
-    with left:
-        st.markdown("""
-        ### Steps:
-        1. Set Depth
-        2. Define Category Hierarchy
-        3. Upload Documents
-        4. Generate
-        """)
-
-        # Step 1: Depth
-        st.markdown("#### Step 1: Set Hierarchy Depth")
-        if st.session_state.hierarchy_depth is None:
-            d = st.select_slider("Select depth", [2,3,4], value=2)
-            if st.button("Initialize Hierarchy"):
-                st.session_state.hierarchy_depth = d
-                st.session_state.hierarchy = {}
-                st.rerun()
-        else:
-            st.info(f"Current depth: {st.session_state.hierarchy_depth}")
-            if st.button("Reset Hierarchy"):
-                st.session_state.hierarchy_depth = None
-                st.session_state.hierarchy = {}
-                st.rerun()
-
-        # Step 3: Upload
-        st.markdown("#### Step 3: Upload Docs")
-        uf = st.file_uploader("Choose docs", accept_multiple_files=True, type=['pdf','txt','docx'])
-        if uf:
-            st.session_state.uploaded_files = uf
-            st.success(f"Uploaded {len(uf)} docs.")
-        
-        # Step 4: Generate
-        st.markdown("#### Step 4: Generate Hierarchy")
-        if st.session_state.hierarchy and st.session_state.uploaded_files:
-            if st.button("Generate Hierarchy"):
-                with st.spinner("Processing..."):
-                    try:
-                        results = process_files_for_hierarchy(
-                            st.session_state.uploaded_files,
-                            st.session_state.hierarchy
-                        )
-                        st.session_state.hierarchy_results = results
-                        st.success("Done!")
-                        
-                        # Visualization
-                        nodes, edges, config = visualize_hierarchy_results(results)
-                        st.markdown("### Hierarchy Visualization")
-                        agraph(nodes=nodes, edges=edges, config=config)
-
-                        # Export
-                        st.markdown("### Export Results")
-                        csvdat = export_hierarchy_results(results)
-                        st.download_button(
-                            "Download CSV",
-                            data=csvdat,
-                            file_name="hierarchy_results.csv",
-                            mime="text/csv"
-                        )
-
-                        # Detailed
-                        st.markdown("### Detailed Results")
-                        for docn, docinfo in results.items():
-                            with st.expander(f"📄 {docn}"):
-                                st.write(f"**Category Path:** {docinfo['path']}")
-                                st.write(f"**Preview:** {docinfo['content']}")
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
-        else:
-            st.warning("Complete steps 1-3 first")
-
-    with right:
-        if st.session_state.hierarchy_depth is not None:
-            st.markdown("#### Step 2: Define Hierarchy")
-            level_tabs = st.tabs([f"Level {i+1}" for i in range(st.session_state.hierarchy_depth)])
-            
-            def add_category(parent_path="", level=1):
-                with level_tabs[level-1]:
-                    if parent_path:
-                        st.markdown(f"*Current path: {parent_path}*")
-                    colA, colB = st.columns([3,1])
-                    with colA:
-                        newcat = st.text_input("Category name", key=f"new_cat_{parent_path}_{level}")
-                    with colB:
-                        if st.button("Add", key=f"add_{parent_path}_{level}"):
-                            cur = st.session_state.hierarchy
-                            parts = parent_path.split("/") if parent_path else []
-                            for p in parts:
-                                if p:
-                                    cur = cur[p]
-                            if isinstance(cur, dict):
-                                if newcat not in cur:
-                                    if level < st.session_state.hierarchy_depth:
-                                        cur[newcat] = {}
-                                    else:
-                                        cur[newcat] = {}
-                                    st.success(f"Added {newcat}")
-                                    st.rerun()
-                    
-                    if st.session_state.hierarchy:
-                        st.markdown("##### Current Categories:")
-                        cur = st.session_state.hierarchy
-                        for p in parent_path.split("/"):
-                            if p:
-                                cur = cur[p]
-                        if isinstance(cur, dict):
-                            for ckey in list(cur.keys()):
-                                c1, c2 = st.columns([4,1])
-                                with c1:
-                                    st.markdown(f"🔹 {ckey}")
-                                with c2:
-                                    if st.button("🗑️", key=f"del_{parent_path}_{ckey}"):
-                                        del cur[ckey]
-                                        st.rerun()
-                                # Recurse
-                                if level < st.session_state.hierarchy_depth:
-                                    newp = f"{parent_path}/{ckey}" if parent_path else ckey
-                                    add_category(newp, level+1)
-
-            add_category()
-
-            st.markdown("#### Complete Hierarchy Preview")
-            if st.session_state.hierarchy:
-                def display_hier(hier, lvl=0):
-                    out = ""
-                    indent = "  " * lvl
-                    for cat, subs in hier.items():
-                        out += f"{indent}📁 {cat}\n"
-                        if isinstance(subs, dict):
-                            out += display_hier(subs, lvl+1)
-                    return out
-                st.code(display_hier(st.session_state.hierarchy), language="plaintext")
-            else:
-                st.info("Add categories above to see preview.")
-
-###############################################################################
-# SECTION 7: SCORING + “GO DEEP” LOGIC
-###############################################################################
-
-def score_category(content, category):
-    """
-    LLM prompt that returns a float between 0.0 and 1.0 
-    for how well 'content' matches 'category'.
-    """
-    prompt = f"""
-    You are classifying a document in a multi-level taxonomy.
-    Rate how well this document matches the category '{category}'.
-    Return a number between 0.0 and 1.0 only. (No text)
-
-    Document excerpt (up to 1000 chars):
-    {content[:1000]}
-    """
-    try:
-        resp = llm_handler.get_response(prompt)
-        resp = resp.strip().split()[0]
-        resp = ''.join(c for c in resp if c.isdigit() or c == '.')
-        if resp:
-            return float(resp)
-        return 0.0
-    except Exception as e:
-        st.write(f"Error scoring {category}: {str(e)}")
-        return 0.0
-
-def go_as_deep_as_possible(content, hierarchy, parent_path="", threshold=0.3):
-    """
-    This approach always attempts to go deeper if the parent is above threshold.
-    Steps:
-      1. Score parent
-      2. If score < threshold, return (Uncategorized, 0.0)
-      3. If parent >= threshold, we STILL check all children.
-         - Among children that also exceed threshold, pick the best child's final path.
-         - If no child is above threshold, stay at parent.
-    """
+    file_lower = filename.lower()
+    
     best_path = "Uncategorized"
-    best_score = 0.0
+    best_depth = 0  # how many levels deep we matched
+    stack = [(cat, 1, cat) for cat in hierarchy]  # (category_label, depth, path_str)
     
-    # 1. Score the current node (which might be the root if parent_path == "")
-    node_name = parent_path.split("/")[-1] if "/" in parent_path else parent_path
-    # If parent_path is empty, this is special for root usage
-    # We'll interpret "root" as "no category," so let's skip scoring 
-    if parent_path:  
-        parent_score = score_category(content, node_name)
-        st.write(f"DEBUG: Checking node '{node_name}', path='{parent_path}', score={parent_score:.4f}")
-        if parent_score < threshold:
-            return "Uncategorized", 0.0
-        # If above threshold, set as candidate
-        best_path = parent_path
-        best_score = parent_score
-    else:
-        # If parent_path is "", it's the "root" so we proceed to children
-        parent_score = 1.0  # artificially to ensure we check children
-        st.write(f"DEBUG: Root node, we skip scoring or assume 1.0 to traverse children.")
-    
-    # 2. Check children if any
-    current_level = hierarchy
-    # If parent_path is not empty, we navigate to that node
-    if parent_path:
-        parts = parent_path.split("/")
-        # If there's at least 1 part, e.g. "Cars" or "Cars/European"
-        # we traverse the dict to get the sub-dict
-        for p in parts:
-            if p:
-                current_level = current_level[p]
-    
-    if isinstance(current_level, dict) and len(current_level) > 0:
-        # Among children that also exceed threshold, pick the best final path
-        best_child_score = 0.0
-        best_child_path = best_path  # default to parent
-        for child_name in current_level:
-            # Build a path for child
-            child_path = f"{parent_path}/{child_name}" if parent_path else child_name
-            # We recursively check that child's "node"
-            final_path, final_score = go_as_deep_as_possible(content, hierarchy, child_path, threshold)
-            if final_score > best_child_score:
-                best_child_score = final_score
-                best_child_path = final_path
+    while stack:
+        label, depth, path_str = stack.pop()
         
-        # If the best child's final_score is >= threshold, we prefer child
-        # even if it's lower than parent's score => "always go deeper if child is feasible"
-        if best_child_score >= threshold:
-            return best_child_path, best_child_score
+        # If label appears in file name, we consider it matched
+        if label.lower() in file_lower and depth > best_depth:
+            best_depth = depth
+            best_path = path_str
+        
+        # If subcategories exist, push them
+        subcats = hierarchy.get(label)
+        if isinstance(subcats, dict):
+            for subcat in subcats:
+                new_path = f"{path_str}/{subcat}"
+                stack.append((subcat, depth + 1, new_path))
     
-    # If no child or no child's above threshold, we remain at parent's path
-    return best_path, best_score
+    return best_path
 
-def find_best_path_in_hierarchy(content, hierarchy, threshold=0.3):
-    """
-    Start from root with a 'go as deep as possible' approach.
-    We interpret the top-level keys in 'hierarchy' as children of root 
-    and let 'go_as_deep_as_possible' do the recursion.
-    """
-    if not hierarchy:
-        return "Uncategorized"
-    
-    # We'll do a small loop to see which top-level child gets the best final path
-    # using the "go_as_deep_as_possible" approach. 
-    best_global_path = "Uncategorized"
-    best_global_score = 0.0
-    
-    for root_cat in hierarchy:
-        root_path = root_cat
-        final_path, final_score = go_as_deep_as_possible(content, hierarchy, root_path, threshold)
-        if final_score > best_global_score:
-            best_global_score = final_score
-            best_global_path = final_path
-    
-    # If everything is < threshold, or all children lead to "Uncategorized," we do that
-    if best_global_score < 0.05:
-        return "Uncategorized"
-    return best_global_path
-
-###############################################################################
-# SECTION 8: PROCESS AND VISUALIZE
-###############################################################################
 
 def process_files_for_hierarchy(files, hierarchy):
-    """
-    Classify each file with the 'go_as_deep_as_possible' approach:
-    - For each top-level category, we see if the doc surpasses threshold
-    - If so, we keep going deeper, ignoring whether child is lower or higher 
-      than the parent, as long as the child's also above threshold
-    - We pick whichever final child has the highest final score
-    """
+    """Use 'classify_by_filename' to assign each file to the deepest matching path."""
     results = {}
-    
     for f in files:
-        try:
-            content, err = read_file_content(f)
-            if err:
-                continue
-            st.write(f"---\n**Processing file:** {f.name}")
-            best_path = find_best_path_in_hierarchy(content, hierarchy, threshold=0.3)
-            # We'll keep a short excerpt
-            excerpt = (content[:200] + "...") if content else ""
-            results[f.name] = {
-                'path': best_path,
-                'content': excerpt
-            }
-            st.write(f"DEBUG: Final chosen path for '{f.name}' = {best_path}")
-            st.write("---")
-        except Exception as e:
-            st.error(f"Error processing {f.name}: {str(e)}")
-    
+        # We ignore file content for this approach
+        best_path = classify_by_filename(f.name, hierarchy)
+        excerpt = f.name  # We'll just store the name as "content preview"
+        results[f.name] = {
+            'path': best_path,
+            'content': excerpt
+        }
     return results
 
 def visualize_hierarchy_results(hierarchy_results):
@@ -658,7 +412,7 @@ def visualize_hierarchy_results(hierarchy_results):
     edges = []
     
     def add_category_nodes(hier, parent_id=None, level=0):
-        for cat, subcats in hier.items():
+        for cat, subs in hier.items():
             node_id = f"cat_{level}_{cat}"
             nodes.append(Node(
                 id=node_id,
@@ -669,8 +423,8 @@ def visualize_hierarchy_results(hierarchy_results):
             ))
             if parent_id:
                 edges.append(Edge(source=parent_id, target=node_id))
-            if isinstance(subcats, dict):
-                add_category_nodes(subcats, node_id, level+1)
+            if isinstance(subs, dict):
+                add_category_nodes(subs, node_id, level+1)
     
     def add_docs(results):
         for docn, info in results.items():
@@ -719,17 +473,173 @@ def export_hierarchy_results(hierarchy_results):
     """Export classification results to CSV."""
     import pandas as pd
     data = []
-    for doc_name, doc_info in hierarchy_results.items():
+    for doc_name, info in hierarchy_results.items():
         data.append({
             "Document": doc_name,
-            "Category Path": doc_info["path"],
-            "Preview": doc_info["content"]
+            "Category Path": info["path"],
+            "Preview": info["content"]
         })
     df = pd.DataFrame(data)
     return df.to_csv(index=False)
 
 ###############################################################################
-# SECTION 9: RUN STREAMLIT
+# SECTION 7: HIERARCHICAL QUERY PAGE
+###############################################################################
+
+def hierarchical_query_page():
+    """
+    A 'title-based' approach to classification for the Hierarchical Query Generator:
+    We ignore file content and rely on the filename containing keywords 
+    that match categories or subcategories in the hierarchy.
+    """
+    st.title("Hierarchical Query Path Generator")
+
+    if 'hierarchy_depth' not in st.session_state:
+        st.session_state.hierarchy_depth = None
+    if 'hierarchy' not in st.session_state:
+        st.session_state.hierarchy = {}
+    if 'uploaded_files' not in st.session_state:
+        st.session_state.uploaded_files = []
+
+    left, right = st.columns([2,3])
+
+    with left:
+        st.markdown("""
+        ### Steps:
+        1. Set the depth
+        2. Define your category hierarchy
+        3. Upload documents
+        4. Generate
+        """)
+        
+        # Step 1: Set Depth
+        st.markdown("#### Step 1: Set Hierarchy Depth")
+        if st.session_state.hierarchy_depth is None:
+            d = st.select_slider("Select depth", [2,3,4], value=2)
+            if st.button("Initialize Hierarchy"):
+                st.session_state.hierarchy_depth = d
+                st.session_state.hierarchy = {}
+                st.rerun()
+        else:
+            st.info(f"Current depth: {st.session_state.hierarchy_depth}")
+            if st.button("Reset Hierarchy"):
+                st.session_state.hierarchy_depth = None
+                st.session_state.hierarchy = {}
+                st.rerun()
+
+        # Step 3: File Upload
+        st.markdown("#### Step 3: Upload Documents")
+        uf = st.file_uploader("Choose docs for classification", accept_multiple_files=True, type=['pdf','txt','docx'])
+        if uf:
+            st.session_state.uploaded_files = uf
+            st.success(f"Uploaded {len(uf)} docs.")
+        
+        # Step 4: Generate
+        st.markdown("#### Step 4: Generate Hierarchy")
+        if st.session_state.hierarchy and st.session_state.uploaded_files:
+            if st.button("Generate Hierarchy"):
+                with st.spinner("Classifying by filename..."):
+                    try:
+                        results = process_files_for_hierarchy(
+                            st.session_state.uploaded_files,
+                            st.session_state.hierarchy
+                        )
+                        st.session_state.hierarchy_results = results
+                        st.success("Done!")
+                        
+                        # Visualization
+                        nodes, edges, config = visualize_hierarchy_results(results)
+                        st.markdown("### Hierarchy Visualization")
+                        agraph(nodes=nodes, edges=edges, config=config)
+
+                        # Export
+                        st.markdown("### Export Results")
+                        csvdat = export_hierarchy_results(results)
+                        st.download_button(
+                            "Download CSV",
+                            data=csvdat,
+                            file_name="hierarchy_results.csv",
+                            mime="text/csv"
+                        )
+                        
+                        # Detailed
+                        st.markdown("### Detailed Results")
+                        for docn, docinfo in results.items():
+                            with st.expander(f"📄 {docn}"):
+                                st.write(f"**Category Path:** {docinfo['path']}")
+                                st.write(f"**Preview:** {docinfo['content']}")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+        else:
+            st.warning("Complete steps 1-3 first.")
+
+    with right:
+        if st.session_state.hierarchy_depth is not None:
+            st.markdown("#### Step 2: Define Categories")
+            level_tabs = st.tabs([f"Level {i+1}" for i in range(st.session_state.hierarchy_depth)])
+            
+            def add_category(parent_path="", level=1):
+                with level_tabs[level-1]:
+                    if parent_path:
+                        st.markdown(f"*Current path: {parent_path}*")
+                    cA, cB = st.columns([3,1])
+                    with cA:
+                        newcat = st.text_input("Category name", key=f"new_cat_{parent_path}_{level}")
+                    with cB:
+                        if st.button("Add", key=f"add_{parent_path}_{level}"):
+                            cur_level = st.session_state.hierarchy
+                            parts = parent_path.split("/") if parent_path else []
+                            for p in parts:
+                                if p:
+                                    cur_level = cur_level[p]
+                            if isinstance(cur_level, dict):
+                                if newcat not in cur_level:
+                                    if level < st.session_state.hierarchy_depth:
+                                        cur_level[newcat] = {}
+                                    else:
+                                        cur_level[newcat] = {}
+                                    st.success(f"Added {newcat}")
+                                    st.rerun()
+                    
+                    if st.session_state.hierarchy:
+                        st.markdown("##### Current Categories:")
+                        cur_level = st.session_state.hierarchy
+                        for p in parent_path.split("/"):
+                            if p:
+                                cur_level = cur_level[p]
+                        if isinstance(cur_level, dict):
+                            for ckey in list(cur_level.keys()):
+                                c1, c2 = st.columns([4,1])
+                                with c1:
+                                    st.markdown(f"🔹 {ckey}")
+                                with c2:
+                                    if st.button("🗑️", key=f"del_{parent_path}_{ckey}"):
+                                        del cur_level[ckey]
+                                        st.rerun()
+                                # Recursively handle deeper if needed
+                                if level < st.session_state.hierarchy_depth:
+                                    newp = f"{parent_path}/{ckey}" if parent_path else ckey
+                                    add_category(newp, level+1)
+
+            add_category()
+
+            # Show the final hierarchy preview
+            st.markdown("#### Complete Hierarchy Preview")
+            if st.session_state.hierarchy:
+                def display_hier(hier, lvl=0):
+                    out = ""
+                    indent = "  " * lvl
+                    for cat, subs in hier.items():
+                        out += f"{indent}📁 {cat}\n"
+                        if isinstance(subs, dict):
+                            out += display_hier(subs, lvl+1)
+                    return out
+                st.code(display_hier(st.session_state.hierarchy), language="plaintext")
+            else:
+                st.info("Add subcategories to see the preview.")
+
+###############################################################################
+# SECTION 8: RUN STREAMLIT
 ###############################################################################
 
 if __name__ == "__main__":
