@@ -399,7 +399,6 @@ def document_management_page():
             st.session_state.file_categories = {}
         st.session_state.uploaded_files_names = set()
         st.rerun()
-                # Display documents here
 
     # Add Summarize Files section
     st.header("Summarize Files")
@@ -649,6 +648,11 @@ def hierarchical_query_page():
             else:
                 st.info("Start adding categories to see the hierarchy preview")
 
+
+##############################
+# BELOW ARE THE KEY CHANGES: #
+##############################
+
 def score_category(content, category):
     """
     Prompt the LLM to get a relevance score (0 to 1) 
@@ -698,6 +702,9 @@ def find_best_category_path(content, hierarchy, current_path="", threshold=0.3):
         # 1. Score the current category
         category_score = score_category(content, category)
         
+        # DEBUG: Print out the category and the score for transparency
+        st.write(f"DEBUG: Path '{current_path or '(root)'}', checking category '{category}', score = {category_score:.4f}")
+
         # 2. Build the new path portion
         new_path = f"{current_path}/{category}" if current_path else category
         
@@ -725,6 +732,10 @@ def find_category_path(content, hierarchy, threshold=0.3):
     Returns the path string or 'Uncategorized' if score is too low.
     """
     best_path, best_score = find_best_category_path(content, hierarchy, "", threshold)
+    
+    # DEBUG: Print final chosen path and score
+    st.write(f"DEBUG: Best path = '{best_path}', best_score = {best_score:.4f}, threshold = {threshold}")
+    
     if best_score < 0.05:
         return "Uncategorized"
     return best_path
@@ -740,6 +751,8 @@ def process_files_for_hierarchy(files, hierarchy):
             if error:
                 continue
             
+            st.write(f"---\n**Processing file:** {file.name}")
+            
             # Tweak threshold as needed. 0.3 is a starting point. 
             best_path = find_category_path(content, hierarchy, threshold=0.3)
             
@@ -748,6 +761,8 @@ def process_files_for_hierarchy(files, hierarchy):
                 'path': best_path,
                 'content': content[:200] + "..."  # Store preview
             }
+            st.write(f"DEBUG: Final chosen path for '{file.name}' = {best_path}")
+            st.write("---")
             
         except Exception as e:
             st.error(f"Error processing {file.name}: {str(e)}")
