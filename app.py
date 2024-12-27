@@ -14,13 +14,6 @@ import numpy as np
 from collections import defaultdict
 from streamlit_agraph import agraph, Node, Edge, Config
 
-# IMPORTANT: We'll import partial_ratio from RapidFuzz
-try:
-    from rapidfuzz.fuzz import partial_ratio
-    # If rapidfuzz isn't installed, you'll need: pip install rapidfuzz
-except ImportError:
-    raise ImportError("Please install rapidfuzz via `pip install rapidfuzz` to use fuzzy matching.")
-
 st.set_page_config(page_title="Document Navigator", layout="wide")
 
 ###############################################################################
@@ -360,91 +353,91 @@ def document_management_page():
                         f.seek(0)
 
 ###############################################################################
-# SECTION 6: FUZZY MATCH LOGIC FOR HIERARCHICAL QUERY GENERATOR
+# SECTION 6: SIMPLE UNDERSCORE-SPLIT FOR HIERARCHICAL QUERY GENERATOR
 ###############################################################################
 
-def fuzzy_subcategory_match(filename, subcat_label, min_score=60):
+def drill_down_underscores(words, node):
     """
-    We'll use partial_ratio from RapidFuzz to see how well 'subcat_label' matches
-    some part of 'filename'. If it meets or exceeds 'min_score', we consider it matched.
+    Given a list of words from the filename (split by '_'), 
+    try to match them in order to the subcategories in 'node'. 
+    We pick the first word that matches a subcategory name, 
+    then go deeper with the rest of the words, etc.
 
     Example:
-      partial_ratio("European_Mercedes_C_Class.txt", "Mercedes") might be 80+ if 
-      "Mercedes" is indeed found. If user typed "Mercedez", it might still 
-      get a partial ratio of 70, etc.
+      words = ["European", "Mercedes", "E", "Class"]
+      node might have subcategories {"European": {"Mercedes": {"E": {"Class": {}}}}}
+      We consume words as we descend.
     """
-    # We'll only check partial_ratio in a case-insensitive manner:
-    return partial_ratio(filename.lower(), subcat_label.lower()) >= min_score
-
-def drill_down_filename_fuzzy(filename, node, min_score=60):
-    """
-    Recursive function:
-      - For each child, see if there's a fuzzy match for child name in filename
-        using partial_ratio >= min_score.
-      - If match, go deeper. If deeper yields a deeper path, return that; 
-        else we just return this child's label.
-      - Return "" if no children match at all.
-    """
-    if not isinstance(node, dict) or len(node) == 0:
+    if not isinstance(node, dict) or len(node) == 0 or not words:
+        # No subcategories or no words left => stop
         return ""
-    
-    best_path = ""
-    best_depth = 0
-    # We'll iterate in alphabetical order for consistent tie-breaking
-    for child_name in sorted(node.keys()):
-        if fuzzy_subcategory_match(filename, child_name, min_score):
-            # We matched child, so go deeper
-            deeper_path = drill_down_filename_fuzzy(filename, node[child_name], min_score)
-            if deeper_path:
-                # deeper_path is child_of_child/...
-                full_path = f"{child_name}/{deeper_path}"
-            else:
-                # No deeper match, we stay at child
-                full_path = child_name
-            
-            # measure depth by counting slashes
-            depth = full_path.count("/")
-            if depth > best_depth:
-                best_depth = depth
-                best_path = full_path
-    
-    return best_path
 
-def fuzzy_filename_classify(filename, hierarchy, min_score=60):
-    """
-    At top level, check each top-level cat with fuzzy matching. If we find a match,
-    we go deeper with 'drill_down_filename_fuzzy'.
-    - If multiple top-level cats match, pick the one that yields the DEEPEST final path.
-    - If none match, return 'Uncategorized'.
-    """
-    best_path = ""
-    best_depth = 0
+    first_word = words[0]
     
-    for top_cat in sorted(hierarchy.keys()):
-        # see if there's a fuzzy match for top_cat in filename
-        if fuzzy_subcategory_match(filename, top_cat, min_score):
-            # matched top-level
-            deeper = drill_down_filename_fuzzy(filename, hierarchy[top_cat], min_score)
+    # If this node has a subcat matching the first_word, go deeper
+    # We do an exact match for demo. If you want partial, do first_word.lower() == subcat.lower().
+    if first_word in node:
+        # descend
+        subpath = drill_down_underscores(words[1:], node[first_word])
+        if subpath:
+            return f"{first_word}/{subpath}"
+        else:
+            # No deeper match, we matched 'first_word' only
+            return first_word
+
+    # If we can't match the first word here, we skip it and see if next word can match
+    # (Alternatively, you can require consecutive matching. The choice depends on your preference.)
+    return drill_down_underscores(words[1:], node)
+
+def classify_filename_underscores(filename, hierarchy):
+    """
+    We split the file name by underscores, then for each top-level 
+    subcategory in hierarchy, we see if any words match the top-level cat 
+    and so on, descending into subcategories.
+
+    This approach is a bit simpler: we just try each top-level cat exactly 
+    and see if it is in the list of words. If found, we proceed with the 
+    rest of the words.
+    """
+    base_name = os.path.splitext(filename)[0]  # remove .txt, .pdf, etc.
+    words = base_name.split("_")               # e.g. "European_BMW_5_Series" => ["European","BMW","5","Series"]
+
+    # We'll pick the best, deepest path if multiple top-level categories match
+    best_path = "Uncategorized"
+    best_depth = 0
+
+    for top_cat, subdict in hierarchy.items():
+        # Check if top_cat is in the first set of words
+        # For a direct approach, we see if top_cat is in words
+        # If not, skip
+        if top_cat in words:
+            # Then we skip that top_cat in the words list
+            idx = words.index(top_cat)
+            # We "consume" that word as a match, then pass the rest to 'drill_down_underscores'
+            leftover = words[idx+1:]
+            deeper = drill_down_underscores(leftover, subdict)
             if deeper:
                 full_path = f"{top_cat}/{deeper}"
             else:
                 full_path = top_cat
-            
+
             depth = full_path.count("/")
             if depth > best_depth:
                 best_depth = depth
                 best_path = full_path
-    
-    return best_path if best_path else "Uncategorized"
+
+    return best_path
 
 def process_files_for_hierarchy(files, hierarchy):
-    """Use fuzzy matching on file names to place them in the deepest matched path."""
+    """Use the underscore-split approach to find the deepest matching path."""
     results = {}
     for f in files:
-        best_path = fuzzy_filename_classify(f.name, hierarchy, min_score=60)
+        path = classify_filename_underscores(f.name, hierarchy)
+        if not path:
+            path = "Uncategorized"
         results[f.name] = {
-            'path': best_path,
-            'content': f.name  # We'll store just the filename as "content" preview
+            'path': path,
+            'content': f.name
         }
     return results
 
@@ -484,7 +477,7 @@ def visualize_hierarchy_results(hierarchy_results):
                 target_id = f"cat_{len(parts)-1}_{final_cat}"
                 edges.append(Edge(source=target_id, target=doc_id))
             else:
-                # If uncategorized, link to special node
+                # If uncategorized, link to a special node
                 unc_id = "cat_uncategorized"
                 if not any(n.id == unc_id for n in nodes):
                     nodes.append(Node(
@@ -530,10 +523,13 @@ def export_hierarchy_results(hierarchy_results):
 
 def hierarchical_query_page():
     """
-    A fuzzy-match approach to filename-based classification.
-    If "european" is spelled "europen," partial_ratio might be 75 => match.
-    If "mercedes" is spelled "mercedez," partial_ratio might be 80 => match.
-    Adjust 'min_score' to be stricter or looser.
+    A super-simple underscore-split approach:
+    - Example file: 'European_BMW_5_Series.txt'
+    - We see 'European' => go into subdict if present
+    - Then 'BMW' => go deeper
+    - '5' => if there's a subcategory named '5', we match, else skip
+    - 'Series' => etc.
+    - If we can't match the next word in the subdict, we stop.
     """
     st.title("Hierarchical Query Path Generator")
 
@@ -554,7 +550,7 @@ def hierarchical_query_page():
         3. Upload Documents
         4. Generate
         """)
-        
+
         # Step 1: Set Depth
         st.markdown("#### Step 1: Set Hierarchy Depth")
         if st.session_state.hierarchy_depth is None:
@@ -581,9 +577,8 @@ def hierarchical_query_page():
         st.markdown("#### Step 4: Generate Hierarchy")
         if st.session_state.hierarchy and st.session_state.uploaded_files:
             if st.button("Generate Hierarchy"):
-                with st.spinner("Classifying by fuzzy filename match..."):
+                with st.spinner("Classifying by underscore-split..."):
                     try:
-                        # Fuzzy-match the files
                         results = process_files_for_hierarchy(
                             st.session_state.uploaded_files,
                             st.session_state.hierarchy
@@ -681,6 +676,7 @@ def hierarchical_query_page():
                 st.code(display_hier(st.session_state.hierarchy), language="plaintext")
             else:
                 st.info("Add subcategories to see the preview.")
+
 
 ###############################################################################
 # SECTION 8: RUN STREAMLIT
