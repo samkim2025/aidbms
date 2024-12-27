@@ -353,56 +353,88 @@ def document_management_page():
                         f.seek(0)
 
 ###############################################################################
-# SECTION 6: TITLE-BASED HIERARCHICAL CLASSIFICATION
+# SECTION 6: FILENAME-BASED HIERARCHICAL CLASSIFICATION
 ###############################################################################
 
-def classify_by_filename(filename, hierarchy):
+def drill_down_filename(filename, node):
     """
-    Title-based classification for the "Hierarchical Query Generator":
-    We traverse the hierarchy and see which categories appear in the filename 
-    (case-insensitive). We pick the **deepest** matching path we can find.
-    If no match at all, return "Uncategorized".
-
-    Example: if filename = "Commercial_Boeing_787.pdf" 
-      - see if "Planes" is in name
-      - see if "Commercial" is in name
-      - see if "Boeing" is in name
-    If it matches "Planes/Commercial/Boeing", that's the final path.
+    Recursive function that checks each subcategory in 'node' (a dict),
+    seeing if the subcategory name is in the filename. If so, we go deeper.
+    
+    - 'node' is the dict for the current level of the hierarchy
+    - We try each child subcategory in alphabetical order for consistency
+    - If multiple subcategories match, we pick the *first* deep match found
+      (adjust as you wish to handle multiple).
+    - If no child subcategories match, we stop and return the subcategory 
+      we matched at this level.
+    
+    Returns "" if we fail to match anything at this level.
     """
-    file_lower = filename.lower()
+    # If node is empty (no subcategories), we have nothing to match further
+    if not isinstance(node, dict) or len(node) == 0:
+        return ""  # no children
     
-    best_path = "Uncategorized"
-    best_depth = 0  # how many levels deep we matched
-    stack = [(cat, 1, cat) for cat in hierarchy]  # (category_label, depth, path_str)
-    
-    while stack:
-        label, depth, path_str = stack.pop()
-        
-        # If label appears in file name, we consider it matched
-        if label.lower() in file_lower and depth > best_depth:
-            best_depth = depth
-            best_path = path_str
-        
-        # If subcategories exist, push them
-        subcats = hierarchy.get(label)
-        if isinstance(subcats, dict):
-            for subcat in subcats:
-                new_path = f"{path_str}/{subcat}"
-                stack.append((subcat, depth + 1, new_path))
-    
-    return best_path
+    filename_lower = filename.lower()
 
+    # Try each child in alphabetical order or just as inserted
+    for child_name in sorted(node.keys()):
+        child_dict = node[child_name]
+        
+        # Check if 'child_name' is in the filename
+        if child_name.lower() in filename_lower:
+            # We found a match at this child
+            # Now go deeper
+            deeper_result = drill_down_filename(filename, child_dict)
+            # If deeper matched something, that path is child_name + subpath
+            if deeper_result:
+                return f"{child_name}/{deeper_result}"
+            else:
+                # If no deeper match, we still say we matched the child
+                return child_name
+    
+    # No children matched
+    return ""
+
+def classify_by_title(filename, hierarchy):
+    """
+    At the top level, we see which top-level categories match. If multiple 
+    match, we pick the first deep match. If none match at all, 'Uncategorized'.
+    
+    We do it by checking each top-level cat. If cat is found in filename, 
+    we go deeper using 'drill_down_filename'.
+    """
+    filename_lower = filename.lower()
+    
+    # We track the best match path if multiple top-level categories appear
+    best_path = ""
+    best_depth = 0
+    
+    for top_level_cat in sorted(hierarchy.keys()):
+        if top_level_cat.lower() in filename_lower:
+            # We matched at top-level
+            subdict = hierarchy[top_level_cat]
+            sub_path = drill_down_filename(filename, subdict)
+            # If sub_path is not empty, full path is top_level_cat + '/' + sub_path
+            # else it's just top_level_cat
+            full_path = top_level_cat + ("/" + sub_path if sub_path else "")
+            
+            # We'll measure how many slashes to see how "deep" we went
+            depth = full_path.count("/")
+            if depth > best_depth:
+                best_depth = depth
+                best_path = full_path
+    
+    return best_path if best_path else "Uncategorized"
 
 def process_files_for_hierarchy(files, hierarchy):
-    """Use 'classify_by_filename' to assign each file to the deepest matching path."""
+    """Use filename-based approach to assign each file to the deepest matching path."""
     results = {}
     for f in files:
-        # We ignore file content for this approach
-        best_path = classify_by_filename(f.name, hierarchy)
-        excerpt = f.name  # We'll just store the name as "content preview"
+        best_path = classify_by_title(f.name, hierarchy)
+        # We'll store just the filename as 'content' preview
         results[f.name] = {
             'path': best_path,
-            'content': excerpt
+            'content': f.name
         }
     return results
 
@@ -488,9 +520,9 @@ def export_hierarchy_results(hierarchy_results):
 
 def hierarchical_query_page():
     """
-    A 'title-based' approach to classification for the Hierarchical Query Generator:
-    We ignore file content and rely on the filename containing keywords 
-    that match categories or subcategories in the hierarchy.
+    A purely filename-based approach for the "Hierarchical Query Generator".
+    If the filename contains 'Cars' and 'European' and 'BMW', we place it under
+    "Cars/European/BMW", etc.
     """
     st.title("Hierarchical Query Path Generator")
 
@@ -506,12 +538,12 @@ def hierarchical_query_page():
     with left:
         st.markdown("""
         ### Steps:
-        1. Set the depth
-        2. Define your category hierarchy
-        3. Upload documents
+        1. Set Depth
+        2. Define Category Hierarchy
+        3. Upload Documents
         4. Generate
         """)
-        
+
         # Step 1: Set Depth
         st.markdown("#### Step 1: Set Hierarchy Depth")
         if st.session_state.hierarchy_depth is None:
@@ -527,9 +559,9 @@ def hierarchical_query_page():
                 st.session_state.hierarchy = {}
                 st.rerun()
 
-        # Step 3: File Upload
+        # Step 3: Upload
         st.markdown("#### Step 3: Upload Documents")
-        uf = st.file_uploader("Choose docs for classification", accept_multiple_files=True, type=['pdf','txt','docx'])
+        uf = st.file_uploader("Choose docs", accept_multiple_files=True, type=['pdf','txt','docx'])
         if uf:
             st.session_state.uploaded_files = uf
             st.success(f"Uploaded {len(uf)} docs.")
@@ -637,6 +669,7 @@ def hierarchical_query_page():
                 st.code(display_hier(st.session_state.hierarchy), language="plaintext")
             else:
                 st.info("Add subcategories to see the preview.")
+
 
 ###############################################################################
 # SECTION 8: RUN STREAMLIT
