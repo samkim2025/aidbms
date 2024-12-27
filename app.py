@@ -17,7 +17,7 @@ from streamlit_agraph import agraph, Node, Edge, Config
 st.set_page_config(page_title="Document Navigator", layout="wide")
 
 ###############################################################################
-# 1. INITIAL SETUP: Caching, Timeout Decorators, Handler Init
+# SECTION 1: INITIALIZATION
 ###############################################################################
 
 @st.cache_resource
@@ -31,8 +31,9 @@ def init_handlers():
 parser, db_handler, llm_handler, categorizer = init_handlers()
 
 def timeout_handler(timeout_duration=5):
-    """Decorator to handle timeouts for functions."""
+    """Decorator for timeouts."""
     def decorator(func):
+        @wraps(func)
         def wrapper(*args, **kwargs):
             result = [None]
             error = [None]
@@ -53,19 +54,19 @@ def timeout_handler(timeout_duration=5):
             if error[0] is not None:
                 return None, str(error[0])
             return result[0], None
-        return wraps(func)(wrapper)
+        return wrapper
     return decorator
 
 @timeout_handler(5)
 def read_file_content(file):
-    """Read the file content (pdf, txt, docx) with a 5-second timeout."""
+    """Read file content with a 5-second timeout."""
     file_type = file.name.split('.')[-1].lower()
     
     try:
         if file_type == 'pdf':
             content = PdfParser.parse(file)
             if not content:
-                st.warning(f"Could not extract text from {file.name} (maybe scanned/protected).")
+                st.warning(f"Could not extract text from {file.name} (maybe scanned).")
             return content
         elif file_type == 'txt':
             return TextParser.parse(file)
@@ -78,30 +79,29 @@ def read_file_content(file):
         return ""
 
 ###############################################################################
-# 2. BASIC TOP-LEVEL CATEGORIZATION (FOR 'DOCUMENT MANAGEMENT' PAGE)
+# SECTION 2: BASIC TOP-LEVEL CATEGORIZATION (DOCUMENT MANAGEMENT)
 ###############################################################################
 
 @timeout_handler(5)
 def categorize_file(content, categories):
     """
-    A simpler function that classifies a document into ONE of the top-level 
-    categories. This is for the Document Management page, not the deeper 
-    hierarchical classification.
+    Classify file content into exactly ONE of the top-level categories.
+    Return the single best match or 'Uncategorized'.
     """
     if not categories or not content.strip():
         return "Uncategorized"
     
     prompt = f"""
-    You are an expert classifier. Classify this text into exactly ONE of these 
-    top-level categories: {', '.join(categories)}.
-
+    You are an expert classifier. Categorize this text into exactly ONE of these 
+    top-level categories: {', '.join(categories)}. 
+    
     If it doesn't match well, return 'Uncategorized'.
 
-    Text snippet (up to 3000 chars):
+    Document excerpt:
     ---
     {content[:3000]}
     ---
-
+    
     Return ONLY the single category name:
     """
     try:
@@ -115,19 +115,15 @@ def categorize_file(content, categories):
                 return cat
         return "Uncategorized"
     except Exception as e:
-        print(f"Top-level categorization error: {str(e)}")
+        print(f"categorize_file error: {str(e)}")
         return "Uncategorized"
 
 def reclassify_all_documents():
-    """
-    If user modifies or removes top-level categories, re-run 
-    the classification on already uploaded docs.
-    """
+    """Re-run top-level classification after categories change."""
     if not st.session_state.get('uploaded_files_names'):
         return
-    
-    with st.spinner("Reclassifying..."):
-        old_cats = st.session_state.file_categories.copy()
+    with st.spinner("Reclassifying docs..."):
+        old = st.session_state.file_categories.copy()
         for fname in st.session_state.uploaded_files_names:
             try:
                 content = read_file_content(fname)
@@ -135,48 +131,40 @@ def reclassify_all_documents():
                     new_cat, err = categorize_file(content, st.session_state.categories)
                     if not err:
                         st.session_state.file_categories[fname] = new_cat
-                        
-                        # If changed
-                        if fname in old_cats and old_cats[fname] != new_cat:
-                            st.info(f"Reclassified {fname}: {old_cats[fname]} → {new_cat}")
+                        if fname in old and old[fname] != new_cat:
+                            st.info(f"Reclassified {fname}: {old[fname]} → {new_cat}")
             except Exception as e:
                 st.error(f"Error reclassifying {fname}: {str(e)}")
-                if fname in old_cats:
-                    st.session_state.file_categories[fname] = old_cats[fname]
+                if fname in old:
+                    st.session_state.file_categories[fname] = old[fname]
         st.success("Reclassification complete!")
 
 ###############################################################################
-# 3. SUMMARIZATION HELPERS
+# SECTION 3: SUMMARIZE
 ###############################################################################
 
 @timeout_handler(10)
 def summarize_file_content(content, file_name):
-    """
-    Generate a short summary for the file content. 
-    Returns a text summary or (summary, None).
-    """
+    """Generate a short summary for the file."""
     prompt = f"""
-    Create a concise summary (1-2 sentences, under 200 characters) 
-    for the following document. Start with:
+    Create a very brief summary (1-2 short sentences, under 200 chars) 
+    for the document. Start with:
     "{file_name} is a {file_name.split('.')[-1]} file about..."
 
     Document excerpt:
     ---
     {content[:3000]}
     ---
-
-    Return ONLY the summary text:
     """
     return llm_handler.get_response(prompt)
 
 ###############################################################################
-# 4. STREAMLIT MAIN AND PAGE NAVIGATION
+# SECTION 4: STREAMLIT APP
 ###############################################################################
 
 def main():
     st.title("AI Document Management System")
 
-    # Initialize session
     if 'categories' not in st.session_state:
         st.session_state.categories = []
     if 'uploaded_files_names' not in st.session_state:
@@ -184,7 +172,6 @@ def main():
     if 'file_categories' not in st.session_state:
         st.session_state.file_categories = {}
 
-    # Sidebar
     with st.sidebar:
         st.header("Navigation")
         page = st.selectbox(
@@ -192,8 +179,7 @@ def main():
             ["Document Management", "Hierarchical Query Generator"],
             index=0
         )
-        
-        # If user is on Document Management, show category mgmt
+        # If on Document Management, show categories
         if page == "Document Management":
             st.markdown("---")
             st.header("Category Management")
@@ -206,16 +192,20 @@ def main():
                 elif new_cat in st.session_state.categories:
                     st.warning("That category already exists!")
                 else:
-                    st.warning("Enter a category name!")
-
+                    st.warning("Please enter a category name!")
+            
             if st.session_state.categories:
                 st.subheader("Current Categories")
                 for idx, cat in enumerate(st.session_state.categories):
                     c1, c2 = st.columns([3,1])
                     with c1:
-                        edited = st.text_input(f"Category {idx+1}", value=cat, key=f"edit_{idx}")
-                        if edited != cat:
-                            st.session_state.categories[idx] = edited
+                        editval = st.text_input(
+                            f"Category {idx+1}",
+                            value=cat,
+                            key=f"edit_{idx}"
+                        )
+                        if editval != cat:
+                            st.session_state.categories[idx] = editval
                             reclassify_all_documents()
                     with c2:
                         if st.button("🗑️", key=f"delete_{idx}"):
@@ -224,109 +214,101 @@ def main():
                             st.rerun()
             else:
                 st.info("No top-level categories yet. Add one above!")
-    
-    # Pages
+
     if page == "Document Management":
         document_management_page()
     else:
         hierarchical_query_page()
 
 ###############################################################################
-# 5. DOCUMENT MANAGEMENT PAGE
+# SECTION 5: DOCUMENT MANAGEMENT PAGE
 ###############################################################################
 
 def document_management_page():
-    """Lets user upload, parse, top-level classify, and summarize docs."""
+    """User can upload, parse, classify (top-level), summarize."""
     st.markdown("""
-    ### Basic Instructions
-    1. **Upload** your files.
-    2. **Test Parse** if you want to see the text excerpt.
-    3. **Classify** into top-level categories on the sidebar.
-    4. **Save** or **Remove** them from categories.
-    5. Optionally **Summarize**.
+    ### Steps:
+    1. **Upload** files.
+    2. **Test Parse** (optional).
+    3. **Classify** docs with existing categories.
+    4. **Review** or **Remove**.
+    5. **Summarize** if needed.
     """)
     st.markdown("---")
 
-    # Upload
     uploaded_files = st.file_uploader(
-        "Upload Documents",
+        "Upload Documents", 
         accept_multiple_files=True,
         type=['pdf','txt','docx']
     )
 
     # Test parse
     if uploaded_files and st.button("Test Parse Files"):
-        for file in uploaded_files:
-            st.write(f"Testing parse for {file.name}")
-            content, err = read_file_content(file)
+        for f in uploaded_files:
+            st.write(f"Testing parse for: {f.name}")
+            content, err = read_file_content(f)
             if err:
-                st.warning(f"Skipping {file.name}: {err}")
+                st.warning(f"Skipping {f.name}: {err}")
                 continue
-            st.write("First 200 chars:")
-            st.write(content[:200])
-            file.seek(0)
+            st.write("First 200 chars:", content[:200])
             st.write("---")
+            f.seek(0)
 
     # Classify
     if uploaded_files and st.button("Classify Documents"):
         with st.spinner("Classifying..."):
-            for file in uploaded_files:
-                if file.name not in st.session_state.uploaded_files_names:
-                    content, err = read_file_content(file)
+            for f in uploaded_files:
+                if f.name not in st.session_state.uploaded_files_names:
+                    content, err = read_file_content(f)
                     if err:
-                        st.warning(f"Skipping {file.name}: {err}")
+                        st.warning(f"Skipping {f.name}: {err}")
                         continue
                     cat, cat_err = categorize_file(content, st.session_state.categories)
                     if cat_err:
                         st.warning(f"Error: {cat_err}")
                         continue
-                    st.session_state.file_categories[file.name] = cat
-                    st.session_state.uploaded_files_names.add(file.name)
-                    st.write(f"{file.name} → {cat}")
+                    st.session_state.file_categories[f.name] = cat
+                    st.session_state.uploaded_files_names.add(f.name)
+                    st.write(f"{f.name} → {cat}")
         st.success("Done!")
 
-    # Display docs
+    # Show current docs
     if uploaded_files:
         st.subheader("Current Documents")
-        for file in uploaded_files:
+        for f in uploaded_files:
             c1, c2, c3, c4 = st.columns([2,1,2,1])
             with c1:
-                st.write(f"📄 {file.name}")
+                st.write(f"📄 {f.name}")
             with c2:
-                st.write(f"{file.size/1024:.1f} KB")
+                st.write(f"{f.size/1024:.1f} KB")
             with c3:
-                current = st.session_state.file_categories.get(file.name, "Uncategorized")
-                cat_opts = ["Uncategorized"] + st.session_state.categories
+                curr = st.session_state.file_categories.get(f.name, "Uncategorized")
+                catops = ["Uncategorized"] + st.session_state.categories
                 try:
-                    idx = cat_opts.index(current)
+                    idx = catops.index(curr)
                 except ValueError:
                     idx = 0
-                new_cat = st.selectbox(
-                    f"Category for {file.name}",
-                    cat_opts,
-                    index=idx,
-                    key=f"cat_{file.name}"
-                )
+                newval = st.selectbox(f"Category for {f.name}", catops, index=idx, key=f"cat_{f.name}")
             with c4:
-                if st.button("Save", key=f"save_{file.name}"):
-                    st.session_state.file_categories[file.name] = new_cat
-                    st.session_state.uploaded_files_names.add(file.name)
-                    st.success(f"Saved {file.name} in {new_cat}")
+                if st.button("Save", key=f"save_{f.name}"):
+                    st.session_state.file_categories[f.name] = newval
+                    st.session_state.uploaded_files_names.add(f.name)
+                    st.success(f"Saved {f.name} → {newval}")
     
-    # Show categorized docs
+    # Show categorized
     st.header("Categorized Documents")
     if st.session_state.file_categories:
         all_cats = ["Uncategorized"] + st.session_state.categories
         tabs = st.tabs(all_cats)
         for tab, c in zip(tabs, all_cats):
             with tab:
-                docs_in_cat = [fname for fname, cat in st.session_state.file_categories.items() if cat == c]
-                if docs_in_cat:
-                    for d in docs_in_cat:
-                        col_a, col_b = st.columns([4,1])
-                        with col_a:
+                docsin = [fn for fn, cc in st.session_state.file_categories.items() if cc == c]
+                if docsin:
+                    for d in docsin:
+                        colA, colB = st.columns([4,1])
+                        with colA:
                             st.write(f"📄 {d}")
-                        with col_b:
+                        with colB:
                             if st.button("Remove", key=f"remove_{c}_{d}"):
                                 del st.session_state.file_categories[d]
                                 st.session_state.uploaded_files_names.remove(d)
@@ -334,9 +316,9 @@ def document_management_page():
                 else:
                     st.write("No documents in this category.")
     else:
-        st.write("No documents have been classified yet.")
+        st.write("No docs have been classified yet.")
 
-    # Clear all
+    # Clear
     if st.button("Clear All Documents"):
         st.session_state.file_categories.clear()
         st.session_state.uploaded_files_names.clear()
@@ -345,101 +327,87 @@ def document_management_page():
     # Summaries
     st.header("Summarize Files")
     if uploaded_files:
-        for file in uploaded_files:
-            st.write(f"📄 {file.name}")
-            if st.button("Summarize", key=f"summarize_{file.name}"):
-                with st.spinner(f"Summarizing {file.name}..."):
+        for f in uploaded_files:
+            st.write(f"📄 {f.name}")
+            if st.button("Summarize", key=f"summarize_{f.name}"):
+                with st.spinner(f"Summarizing {f.name}..."):
                     try:
-                        content, err = read_file_content(file)
+                        content, err = read_file_content(f)
                         if err:
-                            st.warning(f"Skipping {file.name}: {err}")
+                            st.warning(f"Skipping {f.name}: {err}")
                             continue
-                        summary_tuple = summarize_file_content(content, file.name)
-                        if isinstance(summary_tuple, tuple):
-                            summary = summary_tuple[0]
-                            st.markdown(f"**Summary**: {summary}")
+                        summ_tuple = summarize_file_content(content, f.name)
+                        if isinstance(summ_tuple, tuple):
+                            summ = summ_tuple[0]
+                            st.markdown(f"**Summary**: {summ}")
                             st.write("---")
                     except Exception as e:
-                        st.error(f"Error generating summary: {str(e)}")
+                        st.error(f"Error: {str(e)}")
                     finally:
-                        file.seek(0)
+                        f.seek(0)
 
 ###############################################################################
-# 6. HIERARCHICAL CLASSIFICATION WITH "CONTEXT AND KEYWORDS" APPROACH
+# SECTION 6: HIERARCHICAL CLASSIFICATION PAGE
 ###############################################################################
 
 def hierarchical_query_page():
     """
-    This page demonstrates a context-based approach:
-    We have a dictionary of 'typical keywords' for each category. 
-    We'll pass them to the LLM so it can cross-reference whether 
-    the doc content matches that category well.
+    Implements a 'go as deep as possible' approach:
+    - If parent is above threshold, we still check children
+    - Even if child is lower than parent but >= threshold, we prefer the child
+    - This allows multi-level classification
     """
     st.title("Hierarchical Query Path Generator")
 
-    # Basic session state
     if 'hierarchy_depth' not in st.session_state:
         st.session_state.hierarchy_depth = None
     if 'hierarchy' not in st.session_state:
         st.session_state.hierarchy = {}
     if 'uploaded_files' not in st.session_state:
         st.session_state.uploaded_files = []
-    if 'typical_keywords' not in st.session_state:
-        # A sample dictionary of typical words for each category:
-        # You can expand these or alter them to match your domain
-        st.session_state.typical_keywords = {
-            "Cars": ["car", "vehicle", "engine", "automobile", "driving"],
-            "Cars/European": ["mercedes", "bmw", "audi", "renault", "peugeot"],
-            "Cars/Japanese": ["toyota", "honda", "nissan", "mazda"],
-            "Planes": ["airplane", "airport", "aircraft", "flight", "pilot"],
-            "Planes/Commercial": ["airbus", "boeing", "passenger", "airlines"],
-            "Planes/Military": ["fighter", "f35", "stealth", "missile", "warplane"]
-        }
 
-    # Two columns
-    left_col, right_col = st.columns([2,3])
-    
-    with left_col:
+    left, right = st.columns([2,3])
+
+    with left:
         st.markdown("""
         ### Steps:
-        1. **Set Depth**
-        2. **Define Hierarchy + typical keywords** 
-        3. **Upload Documents**
-        4. **Generate** (classify them)
+        1. Set Depth
+        2. Define Category Hierarchy
+        3. Upload Documents
+        4. Generate
         """)
-        
+
         # Step 1: Depth
-        st.markdown("#### Step 1: Set Depth")
+        st.markdown("#### Step 1: Set Hierarchy Depth")
         if st.session_state.hierarchy_depth is None:
-            depth = st.select_slider("Select hierarchy depth", options=[2,3,4], value=2)
+            d = st.select_slider("Select depth", [2,3,4], value=2)
             if st.button("Initialize Hierarchy"):
-                st.session_state.hierarchy_depth = depth
+                st.session_state.hierarchy_depth = d
                 st.session_state.hierarchy = {}
                 st.rerun()
         else:
-            st.info(f"Current depth: {st.session_state.hierarchy_depth} levels")
+            st.info(f"Current depth: {st.session_state.hierarchy_depth}")
             if st.button("Reset Hierarchy"):
                 st.session_state.hierarchy_depth = None
                 st.session_state.hierarchy = {}
                 st.rerun()
 
         # Step 3: Upload
-        st.markdown("#### Step 3: Upload Documents")
-        uf = st.file_uploader("Choose multiple docs", accept_multiple_files=True, type=['pdf','txt','docx'])
+        st.markdown("#### Step 3: Upload Docs")
+        uf = st.file_uploader("Choose docs", accept_multiple_files=True, type=['pdf','txt','docx'])
         if uf:
             st.session_state.uploaded_files = uf
-            st.success(f"Uploaded {len(uf)} documents.")
+            st.success(f"Uploaded {len(uf)} docs.")
         
         # Step 4: Generate
         st.markdown("#### Step 4: Generate Hierarchy")
         if st.session_state.hierarchy and st.session_state.uploaded_files:
             if st.button("Generate Hierarchy"):
-                with st.spinner("Classifying..."):
+                with st.spinner("Processing..."):
                     try:
                         results = process_files_for_hierarchy(
                             st.session_state.uploaded_files,
-                            st.session_state.hierarchy,
-                            st.session_state.typical_keywords
+                            st.session_state.hierarchy
                         )
                         st.session_state.hierarchy_results = results
                         st.success("Done!")
@@ -451,242 +419,246 @@ def hierarchical_query_page():
 
                         # Export
                         st.markdown("### Export Results")
-                        csv_data = export_hierarchy_results(results)
+                        csvdat = export_hierarchy_results(results)
                         st.download_button(
                             "Download CSV",
-                            data=csv_data,
+                            data=csvdat,
                             file_name="hierarchy_results.csv",
                             mime="text/csv"
                         )
 
                         # Detailed
                         st.markdown("### Detailed Results")
-                        for doc_name, doc_info in results.items():
-                            with st.expander(f"📄 {doc_name}"):
-                                st.write(f"**Category Path:** {doc_info['path']}")
-                                st.write(f"**Preview:** {doc_info['content']}")
+                        for docn, docinfo in results.items():
+                            with st.expander(f"📄 {docn}"):
+                                st.write(f"**Category Path:** {docinfo['path']}")
+                                st.write(f"**Preview:** {docinfo['content']}")
                     except Exception as e:
-                        st.error(f"Error generating hierarchy: {str(e)}")
+                        st.error(f"Error: {str(e)}")
         else:
-            st.warning("Complete steps 1-3 first.")
-    
-    with right_col:
-        # Step 2: Category + typical words
+            st.warning("Complete steps 1-3 first")
+
+    with right:
         if st.session_state.hierarchy_depth is not None:
-            st.markdown("#### Step 2: Define Hierarchy + Keywords")
+            st.markdown("#### Step 2: Define Hierarchy")
             level_tabs = st.tabs([f"Level {i+1}" for i in range(st.session_state.hierarchy_depth)])
             
             def add_category(parent_path="", level=1):
                 with level_tabs[level-1]:
                     if parent_path:
-                        st.markdown(f"*Path so far: {parent_path}*")
-                    col1, col2 = st.columns([3,1])
-                    with col1:
-                        new_cat = st.text_input("New subcategory", key=f"new_cat_{parent_path}_{level}")
-                    with col2:
+                        st.markdown(f"*Current path: {parent_path}*")
+                    colA, colB = st.columns([3,1])
+                    with colA:
+                        newcat = st.text_input("Category name", key=f"new_cat_{parent_path}_{level}")
+                    with colB:
                         if st.button("Add", key=f"add_{parent_path}_{level}"):
-                            cur_level = st.session_state.hierarchy
+                            cur = st.session_state.hierarchy
                             parts = parent_path.split("/") if parent_path else []
                             for p in parts:
                                 if p:
-                                    cur_level = cur_level[p]
-                            if isinstance(cur_level, dict):
-                                if new_cat not in cur_level:
-                                    # If not last level, init as dict
-                                    # If last, can still do dict
+                                    cur = cur[p]
+                            if isinstance(cur, dict):
+                                if newcat not in cur:
                                     if level < st.session_state.hierarchy_depth:
-                                        cur_level[new_cat] = {}
+                                        cur[newcat] = {}
                                     else:
-                                        cur_level[new_cat] = {}
-                                    st.success(f"Added {new_cat}")
+                                        cur[newcat] = {}
+                                    st.success(f"Added {newcat}")
                                     st.rerun()
                     
-                    # Show existing
                     if st.session_state.hierarchy:
-                        st.markdown("##### Current Subcategories:")
-                        cur_level = st.session_state.hierarchy
+                        st.markdown("##### Current Categories:")
+                        cur = st.session_state.hierarchy
                         for p in parent_path.split("/"):
                             if p:
-                                cur_level = cur_level[p]
-                        if isinstance(cur_level, dict):
-                            for ckey in list(cur_level.keys()):
-                                cc1, cc2 = st.columns([4,1])
-                                with cc1:
+                                cur = cur[p]
+                        if isinstance(cur, dict):
+                            for ckey in list(cur.keys()):
+                                c1, c2 = st.columns([4,1])
+                                with c1:
                                     st.markdown(f"🔹 {ckey}")
-                                with cc2:
+                                with c2:
                                     if st.button("🗑️", key=f"del_{parent_path}_{ckey}"):
-                                        del cur_level[ckey]
+                                        del cur[ckey]
                                         st.rerun()
-                                # Recurse deeper
+                                # Recurse
                                 if level < st.session_state.hierarchy_depth:
-                                    new_p = f"{parent_path}/{ckey}" if parent_path else ckey
-                                    add_category(new_p, level+1)
+                                    newp = f"{parent_path}/{ckey}" if parent_path else ckey
+                                    add_category(newp, level+1)
 
             add_category()
-            
+
             st.markdown("#### Complete Hierarchy Preview")
             if st.session_state.hierarchy:
-                def display_hier(data, lvl=0):
+                def display_hier(hier, lvl=0):
                     out = ""
-                    indent = "   " * lvl
-                    for cat, subs in data.items():
+                    indent = "  " * lvl
+                    for cat, subs in hier.items():
                         out += f"{indent}📁 {cat}\n"
                         if isinstance(subs, dict):
                             out += display_hier(subs, lvl+1)
                     return out
                 st.code(display_hier(st.session_state.hierarchy), language="plaintext")
             else:
-                st.info("Add subcategories above to see preview.")
-
-            # Let user also **edit** typical keywords dictionary in the sidebar
-            st.markdown("### Typical Keywords Dictionary")
-            st.write("""
-                Each category can have known 'typical words' that appear in a relevant file. 
-                E.g. 'BMW' or 'Mercedes' for 'Cars/European', 'Airbus' or 'Boeing' for 'Planes/Commercial'.
-            """)
-            st.write("These words are used in the LLM prompt to measure how well a file matches the category.")
-            st.write("Current dictionary:")
-            for k, words in st.session_state.typical_keywords.items():
-                st.markdown(f"- **{k}**: {words}")
+                st.info("Add categories above to see preview.")
 
 ###############################################################################
-# 7. SCORING FUNCTION THAT USES 'TYPICAL WORDS' AND PARENT CONTEXT
+# SECTION 7: SCORING + “GO DEEP” LOGIC
 ###############################################################################
 
-def score_category_with_keywords(content, category_path, typical_keywords, threshold=0.3):
+def score_category(content, category):
     """
-    This function uses:
-      1) The parent's path context
-      2) A known list of 'typical words' for the current category path
-    And asks the LLM: "Given these keywords, how well does the doc match this category?"
-
-    We return a float score [0.0 ... 1.0].
+    LLM prompt that returns a float between 0.0 and 1.0 
+    for how well 'content' matches 'category'.
     """
-    # Extract typical words if present, else empty
-    # e.g. if category_path = "Cars/European", we see if there's an entry in typical_keywords
-    words_for_cat = typical_keywords.get(category_path, [])
-    parent_context = category_path.rsplit("/", 1)[0] if "/" in category_path else ""
-    
-    # Build prompt
-    if parent_context:
-        context_str = f"This category is nested under: '{parent_context}'.\n"
-    else:
-        context_str = "This category is at the root level.\n"
-
     prompt = f"""
-    You are classifying a document within a hierarchical taxonomy.
-
-    Category path: {category_path}
-    {context_str}
-
-    Typical words for this category: {', '.join(words_for_cat)}.
-
-    Rate how well this document fits the above category (0.0 to 1.0):
-    - 1.0 = Perfect match (document strongly features the typical words & concepts)
-    - 0.0 = No match at all
+    You are classifying a document in a multi-level taxonomy.
+    Rate how well this document matches the category '{category}'.
+    Return a number between 0.0 and 1.0 only. (No text)
 
     Document excerpt (up to 1000 chars):
     {content[:1000]}
-
-    Return ONLY the numeric score (no words, no explanation).
     """
     try:
         resp = llm_handler.get_response(prompt)
-        resp = resp.strip().split()[0]  # just first token
+        resp = resp.strip().split()[0]
         resp = ''.join(c for c in resp if c.isdigit() or c == '.')
         if resp:
             return float(resp)
         return 0.0
     except Exception as e:
-        st.write(f"Error scoring category '{category_path}': {str(e)}")
+        st.write(f"Error scoring {category}: {str(e)}")
         return 0.0
 
-###############################################################################
-# 8. RECURSIVE CLASSIFICATION USING TYPICAL WORDS
-###############################################################################
-
-def find_best_category_path(content, hierarchy, typical_keywords, current_path="", threshold=0.3):
+def go_as_deep_as_possible(content, hierarchy, parent_path="", threshold=0.3):
     """
-    Recursively find the best scoring category path.
-    We build up 'current_path' as we go deeper.
-    For each node:
-      1) Get a numeric score from 'score_category_with_keywords'
-      2) If it meets threshold, check subcategories
-      3) If subcat ties or beats parent's score, prefer subcat
+    This approach always attempts to go deeper if the parent is above threshold.
+    Steps:
+      1. Score parent
+      2. If score < threshold, return (Uncategorized, 0.0)
+      3. If parent >= threshold, we STILL check all children.
+         - Among children that also exceed threshold, pick the best child's final path.
+         - If no child is above threshold, stay at parent.
     """
-    best_local_path = "Uncategorized"
-    best_local_score = 0.0
+    best_path = "Uncategorized"
+    best_score = 0.0
     
-    for category, subcats in hierarchy.items():
-        # Build full path like "Cars", or "Cars/European", etc.
-        new_path = f"{current_path}/{category}" if current_path else category
-        
-        # 1. Score this category path
-        sc = score_category_with_keywords(content, new_path, typical_keywords, threshold)
-        st.write(f"DEBUG: Path '{current_path or '(root)'}' → checking '{category}', score={sc:.4f}")
-
-        candidate_path = new_path
-        candidate_score = sc
-
-        # 2. If above threshold and has subcats, go deeper
-        if sc >= threshold and isinstance(subcats, dict) and len(subcats) > 0:
-            child_path, child_score = find_best_category_path(content, subcats, typical_keywords, new_path, threshold)
-            if child_score >= candidate_score:
-                candidate_path = child_path
-                candidate_score = child_score
-        
-        # 3. Compare with best so far
-        if candidate_score > best_local_score:
-            best_local_score = candidate_score
-            best_local_path = candidate_path
+    # 1. Score the current node (which might be the root if parent_path == "")
+    node_name = parent_path.split("/")[-1] if "/" in parent_path else parent_path
+    # If parent_path is empty, this is special for root usage
+    # We'll interpret "root" as "no category," so let's skip scoring 
+    if parent_path:  
+        parent_score = score_category(content, node_name)
+        st.write(f"DEBUG: Checking node '{node_name}', path='{parent_path}', score={parent_score:.4f}")
+        if parent_score < threshold:
+            return "Uncategorized", 0.0
+        # If above threshold, set as candidate
+        best_path = parent_path
+        best_score = parent_score
+    else:
+        # If parent_path is "", it's the "root" so we proceed to children
+        parent_score = 1.0  # artificially to ensure we check children
+        st.write(f"DEBUG: Root node, we skip scoring or assume 1.0 to traverse children.")
     
-    return best_local_path, best_local_score
+    # 2. Check children if any
+    current_level = hierarchy
+    # If parent_path is not empty, we navigate to that node
+    if parent_path:
+        parts = parent_path.split("/")
+        # If there's at least 1 part, e.g. "Cars" or "Cars/European"
+        # we traverse the dict to get the sub-dict
+        for p in parts:
+            if p:
+                current_level = current_level[p]
+    
+    if isinstance(current_level, dict) and len(current_level) > 0:
+        # Among children that also exceed threshold, pick the best final path
+        best_child_score = 0.0
+        best_child_path = best_path  # default to parent
+        for child_name in current_level:
+            # Build a path for child
+            child_path = f"{parent_path}/{child_name}" if parent_path else child_name
+            # We recursively check that child's "node"
+            final_path, final_score = go_as_deep_as_possible(content, hierarchy, child_path, threshold)
+            if final_score > best_child_score:
+                best_child_score = final_score
+                best_child_path = final_path
+        
+        # If the best child's final_score is >= threshold, we prefer child
+        # even if it's lower than parent's score => "always go deeper if child is feasible"
+        if best_child_score >= threshold:
+            return best_child_path, best_child_score
+    
+    # If no child or no child's above threshold, we remain at parent's path
+    return best_path, best_score
 
-def find_category_path(content, hierarchy, typical_keywords, threshold=0.3):
+def find_best_path_in_hierarchy(content, hierarchy, threshold=0.3):
     """
-    Wrapper to run the recursion. If best_score < 0.05, return 'Uncategorized'.
+    Start from root with a 'go as deep as possible' approach.
+    We interpret the top-level keys in 'hierarchy' as children of root 
+    and let 'go_as_deep_as_possible' do the recursion.
     """
-    best_path, best_score = find_best_category_path(content, hierarchy, typical_keywords, "", threshold)
-    st.write(f"DEBUG: Best path='{best_path}', best_score={best_score:.4f}, threshold={threshold}")
-    if best_score < 0.05:
+    if not hierarchy:
         return "Uncategorized"
-    return best_path
+    
+    # We'll do a small loop to see which top-level child gets the best final path
+    # using the "go_as_deep_as_possible" approach. 
+    best_global_path = "Uncategorized"
+    best_global_score = 0.0
+    
+    for root_cat in hierarchy:
+        root_path = root_cat
+        final_path, final_score = go_as_deep_as_possible(content, hierarchy, root_path, threshold)
+        if final_score > best_global_score:
+            best_global_score = final_score
+            best_global_path = final_path
+    
+    # If everything is < threshold, or all children lead to "Uncategorized," we do that
+    if best_global_score < 0.05:
+        return "Uncategorized"
+    return best_global_path
 
-def process_files_for_hierarchy(files, hierarchy, typical_keywords):
+###############################################################################
+# SECTION 8: PROCESS AND VISUALIZE
+###############################################################################
+
+def process_files_for_hierarchy(files, hierarchy):
     """
-    Classify each uploaded file using the multi-level approach 
-    that cross-references typical keywords for each category path.
+    Classify each file with the 'go_as_deep_as_possible' approach:
+    - For each top-level category, we see if the doc surpasses threshold
+    - If so, we keep going deeper, ignoring whether child is lower or higher 
+      than the parent, as long as the child's also above threshold
+    - We pick whichever final child has the highest final score
     """
-    processed_results = {}
-    for file in files:
+    results = {}
+    
+    for f in files:
         try:
-            content, err = read_file_content(file)
+            content, err = read_file_content(f)
             if err:
                 continue
-            st.write(f"---\n**Processing file:** {file.name}")
-            
-            path = find_category_path(content, hierarchy, typical_keywords, threshold=0.3)
-            processed_results[file.name] = {
-                'path': path,
-                'content': content[:200] + "..."
+            st.write(f"---\n**Processing file:** {f.name}")
+            best_path = find_best_path_in_hierarchy(content, hierarchy, threshold=0.3)
+            # We'll keep a short excerpt
+            excerpt = (content[:200] + "...") if content else ""
+            results[f.name] = {
+                'path': best_path,
+                'content': excerpt
             }
-            st.write(f"DEBUG: Final chosen path for '{file.name}' = {path}")
+            st.write(f"DEBUG: Final chosen path for '{f.name}' = {best_path}")
             st.write("---")
         except Exception as e:
-            st.error(f"Error processing {file.name}: {str(e)}")
-    return processed_results
-
-###############################################################################
-# 9. VISUALIZATION AND EXPORT
-###############################################################################
+            st.error(f"Error processing {f.name}: {str(e)}")
+    
+    return results
 
 def visualize_hierarchy_results(hierarchy_results):
-    """Create a streamlit-agraph representation of the final classification."""
+    """Create an agraph of the final classification."""
     nodes = []
     edges = []
     
-    def add_category_nodes(hier_dict, parent_id=None, level=0):
-        for cat, subs in hier_dict.items():
+    def add_category_nodes(hier, parent_id=None, level=0):
+        for cat, subcats in hier.items():
             node_id = f"cat_{level}_{cat}"
             nodes.append(Node(
                 id=node_id,
@@ -697,25 +669,23 @@ def visualize_hierarchy_results(hierarchy_results):
             ))
             if parent_id:
                 edges.append(Edge(source=parent_id, target=node_id))
-            
-            if isinstance(subs, dict):
-                add_category_nodes(subs, node_id, level+1)
+            if isinstance(subcats, dict):
+                add_category_nodes(subcats, node_id, level+1)
     
-    def add_doc_nodes(results):
-        for doc_name, doc_info in results.items():
-            doc_id = f"doc_{doc_name}"
+    def add_docs(results):
+        for docn, info in results.items():
+            doc_id = f"doc_{docn}"
             nodes.append(Node(
                 id=doc_id,
-                label=doc_name,
+                label=docn,
                 size=15,
                 color="#99ff99",
                 shape="square"
             ))
-            
-            if doc_info['path'] != "Uncategorized":
-                parts = doc_info['path'].split('/')
-                last_cat = parts[-1]
-                target_id = f"cat_{len(parts)-1}_{last_cat}"
+            if info['path'] != "Uncategorized":
+                parts = info['path'].split('/')
+                final_cat = parts[-1]
+                target_id = f"cat_{len(parts)-1}_{final_cat}"
                 edges.append(Edge(source=target_id, target=doc_id))
             else:
                 # If uncategorized, link to special node
@@ -730,10 +700,8 @@ def visualize_hierarchy_results(hierarchy_results):
                     ))
                 edges.append(Edge(source=unc_id, target=doc_id))
     
-    # Add categories
     add_category_nodes(st.session_state.hierarchy)
-    # Add docs
-    add_doc_nodes(hierarchy_results)
+    add_docs(hierarchy_results)
     
     config = Config(
         width=800,
@@ -761,7 +729,7 @@ def export_hierarchy_results(hierarchy_results):
     return df.to_csv(index=False)
 
 ###############################################################################
-# 10. RUN THE STREAMLIT APP
+# SECTION 9: RUN STREAMLIT
 ###############################################################################
 
 if __name__ == "__main__":
