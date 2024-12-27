@@ -291,7 +291,7 @@ def document_management_page():
         type=['pdf', 'txt', 'docx']
     )
     
-    # Test Parse Files button - moved before duplicate check
+    # Test Parse Files button
     if uploaded_files and st.button("Test Parse Files"):
         for file in uploaded_files:
             st.write(f"Testing parse for: {file.name}")
@@ -597,7 +597,13 @@ def hierarchical_query_page():
                         
                         if isinstance(current_level, dict):
                             if new_cat not in current_level:
-                                current_level[new_cat] = {} if level < st.session_state.hierarchy_depth else None
+                                # If not the last level, init as dict
+                                # If it's the last level, can keep as dict or None 
+                                # for leaf. We'll keep it as dict for consistency
+                                if level < st.session_state.hierarchy_depth:
+                                    current_level[new_cat] = {}
+                                else:
+                                    current_level[new_cat] = {}
                                 st.success(f"✅ Added: {new_cat}")
                                 st.rerun()
                     
@@ -668,53 +674,85 @@ def process_files_for_hierarchy(files, hierarchy):
     
     return processed_results
 
-def find_category_path(content, hierarchy, current_path=""):
-    """Recursively find the best matching category path for the content"""
-    best_score = 0
-    best_path = "Uncategorized"
+def score_category(content, category):
+    """
+    Prompt the LLM to get a relevance score (0 to 1) 
+    for how well the content matches the given category.
+    """
+    prompt = f"""
+    Rate how well this document matches the category '{category}'.
+
+    Document excerpt:
+    {content[:1000]}...
+
+    Instructions:
+    - Respond with ONLY a number between 0 and 1
+    - Use 1 for perfect match
+    - Use 0 for no match
+    - Do not include any explanation
+    - Just the number, nothing else
+
+    Rating:
+    """
+    try:
+        response = llm_handler.get_response(prompt)
+        response = response.strip().split()[0]  # Take first word only
+        # Remove any non-numeric characters except decimal point
+        response = ''.join(c for c in response if c.isdigit() or c == '.')
+        if response:
+            return float(response)
+        else:
+            return 0.0
+    except Exception as e:
+        print(f"Error scoring category {category}: {str(e)}")
+        return 0.0
+
+def find_category_path(content, hierarchy, current_path="", threshold=0.6):
+    """
+    Recursively find the best matching category path for the content using a threshold.
+    If a leaf node is relevant (score > threshold), place the file at that leaf. 
+    Otherwise, keep it at the best-matching parent.
+
+    Returns:
+       best_path (str): The path in the hierarchy that best matches the content.
+    """
+    best_local_score = 0.0
+    best_local_path = "Uncategorized"
     
+    # We compare the highest score among siblings
     for category, subcategories in hierarchy.items():
-        # Calculate match score for current category
-        prompt = f"""
-        Rate how well this document matches the category '{category}'.
+        # 1. Score current category
+        category_score = score_category(content, category)
+
+        # Build path
+        new_path = f"{current_path}/{category}" if current_path else category
         
-        Document excerpt:
-        {content[:1000]}...
+        if category_score > best_local_score:
+            best_local_score = category_score
+            best_local_path = new_path
         
-        Instructions:
-        - Respond with ONLY a number between 0 and 1
-        - Use 1 for perfect match
-        - Use 0 for no match
-        - Do not include any explanation
-        - Just the number, nothing else
-        
-        Rating:"""
-        
-        try:
-            response = llm_handler.get_response(prompt)
-            # Clean the response and extract the number
-            response = response.strip().split()[0]  # Take first word only
-            # Remove any non-numeric characters except decimal point
-            response = ''.join(c for c in response if c.isdigit() or c == '.')
-            
-            if response:
-                score = float(response)
-                if score > best_score:
-                    best_score = score
-                    new_path = f"{current_path}/{category}" if current_path else category
-                    best_path = new_path
-                    
-                    # If there are subcategories and score is good enough, go deeper
-                    if isinstance(subcategories, dict) and score > 0.5:
-                        sub_path = find_category_path(content, subcategories, new_path)
-                        if sub_path != "Uncategorized":
-                            best_path = sub_path
-                        
-        except Exception as e:
-            print(f"Error processing category {category}: {str(e)}")
-            continue
+        # 2. If category has subcategories (dict) and we exceed threshold, 
+        #    then attempt to find a deeper match
+        if isinstance(subcategories, dict) and category_score >= threshold:
+            deeper_path = find_category_path(content, subcategories, new_path, threshold)
+            # If deeper_path is not "Uncategorized", let's get its last score from that path
+            if deeper_path != "Uncategorized":
+                # We'll compare the parent's "best_local_score" with the child's final score
+                # The child's final score is the last category in deeper_path
+                child_category = deeper_path.split('/')[-1]
+                child_score = score_category(content, child_category)
+                
+                if child_score > best_local_score:
+                    best_local_score = child_score
+                    best_local_path = deeper_path
     
-    return best_path
+    # If we never found a category above 0, or best_local_score is extremely low,
+    # we can return "Uncategorized". Adjust as needed.
+    # But if we found some match, return that path.
+    if best_local_score < 0.01:  # If everything is near 0, call it "Uncategorized"
+        return "Uncategorized"
+    
+    return best_local_path
 
 def visualize_hierarchy_results(hierarchy_results):
     """Create an interactive visualization of the hierarchy results"""
@@ -751,10 +789,25 @@ def visualize_hierarchy_results(hierarchy_results):
                 shape="square"
             ))
             
-            # Connect to its category
-            path_parts = doc_info['path'].split('/')
-            target_id = f"cat_{len(path_parts)-1}_{path_parts[-1]}"
-            edges.append(Edge(source=target_id, target=doc_id))
+            if doc_info['path'] != "Uncategorized":
+                # Connect to its category
+                path_parts = doc_info['path'].split('/')
+                # The last part is the actual category name
+                final_cat = path_parts[-1]
+                target_id = f"cat_{len(path_parts)-1}_{final_cat}"
+                edges.append(Edge(source=target_id, target=doc_id))
+            else:
+                # If it's Uncategorized, we can create a separate node or skip
+                unc_id = "cat_uncategorized"
+                if not any(n.id == unc_id for n in nodes):
+                    nodes.append(Node(
+                        id=unc_id,
+                        label="Uncategorized",
+                        size=20,
+                        color="#fab1ce",
+                        shape="dot"
+                    ))
+                edges.append(Edge(source=unc_id, target=doc_id))
     
     # Create the visualization
     add_category_nodes(st.session_state.hierarchy)
